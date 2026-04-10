@@ -9,7 +9,7 @@ local logger = require("logger")
 local _ = require("assistant_gettext")
 local koutil = require("util")
 
-local update_url = "https://api.github.com/repos/omer-faruq/assistant.koplugin/releases/latest"
+local update_url = "https://api.github.com/repos/grantgreeson/assistant.koplugin/releases/latest"
 
 local CONFIGURATION = nil
 local meta = nil
