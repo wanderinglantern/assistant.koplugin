@@ -102,6 +102,14 @@ function Assistant:onDispatcherRegisterActions()
     general = true
   })
 
+  -- Register Dictionary Browse action
+  Dispatcher:registerAction("ai_xray_dict_browse", {
+    category = "none",
+    event = "AskAIXRayDictBrowse",
+    title = _("Browse AI Dictionary"),
+    general = true
+  })
+
   -- Register Quick Notes action (available for gesture binding)
   Dispatcher:registerAction("ai_quick_note", {
     category = "none", 
@@ -193,6 +201,17 @@ function Assistant:addToMainMenu(menu_items)
                     hold_callback = function ()
                       UIManager:show(InfoMessage:new{
                         text = _("Lightweight update: scans only new material since last X-Ray and adds new characters, locations, and terms to the dictionary. Much faster and cheaper than a full X-Ray.")
+                      })
+                    end
+                  },
+                  {
+                    text = _("Browse Dictionary"),
+                    callback = function ()
+                      self:onAskAIXRayDictBrowse()
+                    end,
+                    hold_callback = function ()
+                      UIManager:show(InfoMessage:new{
+                        text = _("Browse all characters, locations, and terms from the X-Ray dictionary for this book. No AI call needed — instant offline access.")
                       })
                     end
                   },
@@ -754,6 +773,101 @@ function Assistant:onDictButtonsReady(dict_popup, dict_buttons)
   if not CONFIGURATION then return end
 
   local plugin_buttons = {}
+
+  -- X-Ray Dictionary lookup: instant, no AI call needed
+  if self.ui and self.ui.document then
+    local props = self.ui.document.getProps and self.ui.document:getProps() or {}
+    local book_hash = props.md5
+        or (self.ui.document.file and tostring(self.ui.document.file):gsub("[^%w]", "_"))
+    if book_hash then
+      local xray_data = self.settings:readSetting("xray_dictionary") or {}
+      local book_dict = xray_data[book_hash]
+      if book_dict and book_dict.characters then
+        local word = dict_popup.word
+        local word_lower = word and word:lower() or ""
+        -- Exact match by name
+        local entry = book_dict.characters[word]
+        -- If no exact match, try case-insensitive name match
+        if not entry then
+          for name, char in pairs(book_dict.characters) do
+            if name:lower() == word_lower then
+              entry = char
+              entry._matched_name = name
+              break
+            end
+          end
+        end
+        -- If still no match, check aliases
+        if not entry then
+          for name, char in pairs(book_dict.characters) do
+            for _, alias in ipairs(char.aliases or {}) do
+              if alias:lower() == word_lower then
+                entry = char
+                entry._matched_name = name
+                break
+              end
+            end
+            if entry then break end
+          end
+        end
+        -- Also check locations and terms
+        if not entry then
+          if book_dict.locations then
+            for name, loc in pairs(book_dict.locations) do
+              if name:lower() == word_lower then
+                entry = { description = loc.description, _type = "location", _matched_name = name }
+                break
+              end
+            end
+          end
+        end
+        if not entry then
+          if book_dict.terms then
+            for name, term in pairs(book_dict.terms) do
+              if name:lower() == word_lower then
+                entry = { description = term.description, _type = "term", _matched_name = name }
+                break
+              end
+            end
+          end
+        end
+        if entry then
+          local display_name = entry._matched_name or word
+          local entry_type = entry._type or "character"
+          table.insert(plugin_buttons, {
+            id = "assistant_xray_dict",
+            font_bold = true,
+            text = string.format("%s (X-Ray)", display_name),
+            callback = function()
+              local text_parts = {}
+              table.insert(text_parts, "**" .. display_name .. "**")
+              if entry_type == "character" then
+                if entry.description and entry.description ~= "" then
+                  table.insert(text_parts, "\n\n" .. entry.description)
+                end
+                if entry.relationships and entry.relationships ~= "" then
+                  table.insert(text_parts, "\n\n*Relationships:* " .. entry.relationships)
+                end
+                if entry.aliases and #entry.aliases > 0 then
+                  table.insert(text_parts, "\n\n*Also known as:* " .. table.concat(entry.aliases, ", "))
+                end
+              else
+                if entry.description and entry.description ~= "" then
+                  table.insert(text_parts, " (" .. entry_type .. ")\n\n" .. entry.description)
+                end
+              end
+              local InfoMessage = require("ui/widget/infomessage")
+              UIManager:show(InfoMessage:new{
+                text = table.concat(text_parts),
+                width = Screen:getWidth() - Screen:scaleBySize(40),
+              })
+            end,
+          })
+        end
+      end
+    end
+  end
+
   if self.settings:readSetting("dict_popup_show_wikipedia", true) then
     table.insert(plugin_buttons, {
       id = "assistant_wikipedia",
@@ -888,6 +1002,112 @@ end
         showFeatureDialog(self, "xray_dictionary_update", book.title, book.authors, book.percent_finished)
       end)
     end)
+    return true
+  end
+
+  function Assistant:onAskAIXRayDictBrowse()
+    if not self.ui or not self.ui.document then return end
+
+    local props = self.ui.document.getProps and self.ui.document:getProps() or {}
+    local book_hash = props.md5
+        or (self.ui.document.file and tostring(self.ui.document.file):gsub("[^%w]", "_"))
+    if not book_hash then
+      UIManager:show(InfoMessage:new{ text = _("No book open.") })
+      return
+    end
+
+    local xray_data = self.settings:readSetting("xray_dictionary") or {}
+    local book_dict = xray_data[book_hash]
+    if not book_dict then
+      UIManager:show(InfoMessage:new{
+        text = _("No X-Ray dictionary for this book yet. Run X-Ray or Update Dictionary first."),
+      })
+      return
+    end
+
+    -- Build menu items from all entry types
+    local menu_items = {}
+    if book_dict.characters then
+      for name, char in pairs(book_dict.characters) do
+        local aliases_str = (char.aliases and #char.aliases > 0) and (" (" .. table.concat(char.aliases, ", ") .. ")") or ""
+        table.insert(menu_items, {
+          text = name .. aliases_str,
+          mandatory = _("Character"),
+          callback = function()
+            local parts = { "**" .. name .. "**" }
+            if char.description and char.description ~= "" then
+              table.insert(parts, "\n\n" .. char.description)
+            end
+            if char.relationships and char.relationships ~= "" then
+              table.insert(parts, "\n\n*Relationships:* " .. char.relationships)
+            end
+            UIManager:show(InfoMessage:new{
+              text = table.concat(parts),
+              width = Screen:getWidth() - Screen:scaleBySize(40),
+            })
+          end,
+          _sort_key = "1_" .. name:lower(),
+        })
+      end
+    end
+    if book_dict.locations then
+      for name, loc in pairs(book_dict.locations) do
+        table.insert(menu_items, {
+          text = name,
+          mandatory = _("Location"),
+          callback = function()
+            UIManager:show(InfoMessage:new{
+              text = "**" .. name .. "** (Location)\n\n" .. (loc.description or ""),
+              width = Screen:getWidth() - Screen:scaleBySize(40),
+            })
+          end,
+          _sort_key = "2_" .. name:lower(),
+        })
+      end
+    end
+    if book_dict.terms then
+      for name, term in pairs(book_dict.terms) do
+        table.insert(menu_items, {
+          text = name,
+          mandatory = _("Term"),
+          callback = function()
+            UIManager:show(InfoMessage:new{
+              text = "**" .. name .. "** (Term)\n\n" .. (term.description or ""),
+              width = Screen:getWidth() - Screen:scaleBySize(40),
+            })
+          end,
+          _sort_key = "3_" .. name:lower(),
+        })
+      end
+    end
+
+    -- Sort: characters first, then locations, then terms, alphabetically within
+    table.sort(menu_items, function(a, b)
+      return (a._sort_key or "") < (b._sort_key or "")
+    end)
+
+    if #menu_items == 0 then
+      UIManager:show(InfoMessage:new{
+        text = _("Dictionary is empty. Run X-Ray or Update Dictionary first."),
+      })
+      return
+    end
+
+    local Menu = require("ui/widget/menu")
+    local Size = require("ui/size")
+    local dict_menu = Menu:new{
+      title = T(_("X-Ray Dictionary (%1 entries)"), #menu_items),
+      item_table = menu_items,
+      width = Screen:getWidth() - Size.margin.default * 2,
+      height = Screen:getHeight() - Size.margin.default * 2,
+      items_per_page = 14,
+      is_borderless = false,
+      is_popout = false,
+      onMenuChoice = function(self_menu, item)
+        if item.callback then item.callback() end
+      end,
+    }
+    UIManager:show(dict_menu)
     return true
   end
 
