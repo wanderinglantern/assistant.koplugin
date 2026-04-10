@@ -169,6 +169,13 @@ local function LanguageSetting(assistant, close_callback)
     return langsetting
 end
 
+-- Get the active model: user selection > config file > fallback
+local function getActiveModel(assistant)
+    return assistant.settings:readSetting("selected_model")
+        or FrontendUtil.tableGetValue(assistant.CONFIGURATION, "provider_settings", "anthropic", "model")
+        or "claude-sonnet-4-6"
+end
+
 local SettingsDialog = InputDialog:extend{
     title = _("AI Assistant Settings"),
 
@@ -268,13 +275,6 @@ function SettingsDialog:onCloseWidget()
     self.assistant._settings_dialog = nil
 end
 
--- Get the active model: user selection > config file > fallback
-local function getActiveModel(assistant)
-    return assistant.settings:readSetting("selected_model")
-        or FrontendUtil.tableGetValue(assistant.CONFIGURATION, "provider_settings", "anthropic", "model")
-        or "claude-sonnet-4-6"
-end
-
 SettingsDialog.getActiveModel = getActiveModel
 
 SettingsDialog.genMenuSettings = function (assistant)
@@ -322,7 +322,7 @@ SettingsDialog.genMenuSettings = function (assistant)
                         -- Build menu items for model selection
                         local current_model = getActiveModel(assistant)
                         local menu_items = {}
-                        for _, model in ipairs(models) do
+                        for i, model in ipairs(models) do
                             table.insert(menu_items, {
                                 text = model.display_name .. "  (" .. model.id .. ")",
                                 checked_func = function()
