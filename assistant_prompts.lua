@@ -425,6 +425,35 @@ Return ONLY new or significantly updated characters, locations, and terms as a J
 Language: **{language}**.
 ]],
     },
+    xray_single_term = {
+        system_prompt =
+        "You are an expert literary assistant. Return ONLY a JSON code block classifying the given term. No narrative, no markdown prose.",
+        user_prompt = [[
+The reader is reading "{title}" by {author} (currently at {progress}% progress).
+
+They highlighted the term: "{highlight}"
+
+Classify this term and return ONLY a JSON code block. Determine if it is a character, location, or term/concept from this book. If it is not recognizable as something from this book, classify it as a "term" with a general definition.
+
+```json
+{
+  "characters": [
+    { "name": "Primary Name", "aliases": ["Alt Name"], "description": "Brief description", "relationships": "Key relationships" }
+  ],
+  "locations": [
+    { "name": "Place Name", "description": "Brief description and significance" }
+  ],
+  "terms": [
+    { "name": "Term", "description": "Concise definition or significance" }
+  ]
+}
+```
+
+Only include the relevant category (characters, locations, or terms) — leave the others as empty arrays.
+
+Language: **{language}**.
+]],
+    },
     book_info = {
         system_prompt =
         "You are an expert literary assistant that provides accurate information about books. Always respond in Markdown format.",

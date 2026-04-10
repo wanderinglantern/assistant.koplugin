@@ -169,27 +169,38 @@ function Assistant:addToMainMenu(menu_items)
                 end
               },
               {
-                text = _("Book-Level Built-in Prompts"),
+                text = _("AI Recap"),
+                callback = function ()
+                  self:onAskAIRecap()
+                end,
+                hold_callback = function ()
+                  UIManager:show(InfoMessage:new{
+                    text = _("A very brief, spoiler-free summary of the book up to current reading progress.")
+                  })
+                end,
+              },
+              {
+                text = _("AI X-Ray"),
+                callback = function ()
+                  self:onAskAIXRay()
+                end,
+                hold_callback = function ()
+                  UIManager:show(InfoMessage:new{
+                    text = _("\"X-Ray\" summary for a book, structured into specific sections like Characters, Locations, Themes, Terms & Concepts, Timeline, and Re-immersion.")
+                  })
+                end
+              },
+              {
+                text = _("X-Ray Dictionary"),
                 sub_item_table = {
                   {
-                    text = _("Book Summary & Recs"),
+                    text = _("Browse Dictionary"),
                     callback = function ()
-                      self:onAskAIBookInfo()
+                      self:onAskAIXRayDictBrowse()
                     end,
                     hold_callback = function ()
                       UIManager:show(InfoMessage:new{
-                        text = _("Summary of the book, author biography, historical context, and a list of similar book recommendations with descriptions.")
-                      })
-                    end
-                  },
-                  {
-                    text = _("AI X-Ray"),
-                    callback = function ()
-                      self:onAskAIXRay()
-                    end,
-                    hold_callback = function ()
-                      UIManager:show(InfoMessage:new{
-                        text = _("\"X-Ray\" summary for a book, structured into specific sections like Characters, Locations, Themes, Terms & Concepts, Timeline, and Re-immersion.")
+                        text = _("Browse all characters, locations, and terms from the X-Ray dictionary for this book. No AI call needed — instant offline access.")
                       })
                     end
                   },
@@ -204,27 +215,22 @@ function Assistant:addToMainMenu(menu_items)
                       })
                     end
                   },
+                },
+                separator = true,
+              },
+              {
+                text = _("More Prompts"),
+                sub_item_table = {
                   {
-                    text = _("Browse Dictionary"),
+                    text = _("Book Summary & Recs"),
                     callback = function ()
-                      self:onAskAIXRayDictBrowse()
+                      self:onAskAIBookInfo()
                     end,
                     hold_callback = function ()
                       UIManager:show(InfoMessage:new{
-                        text = _("Browse all characters, locations, and terms from the X-Ray dictionary for this book. No AI call needed — instant offline access.")
+                        text = _("Summary of the book, author biography, historical context, and a list of similar book recommendations with descriptions.")
                       })
                     end
-                  },
-                  {
-                    text = _("AI Recaps"),
-                    callback = function ()
-                      self:onAskAIRecap()
-                    end,
-                    hold_callback = function ()
-                      UIManager:show(InfoMessage:new{
-                        text = _("A very brief, spoiler-free summary of the book up to current reading progress.")
-                      })
-                    end,
                   },
                   {
                     text = _("Highlight & Note Analysis"),
@@ -248,7 +254,7 @@ function Assistant:addToMainMenu(menu_items)
                       })
                     end,
                   },
-                }
+                },
               },
               {
                 text = _("Book-Level Custom Prompts"),
@@ -463,7 +469,7 @@ function BookLevelCustomPrompts(assistant)
           if not assistant:isConfigured() then return end
           NetworkMgr:runWhenOnline(function()
             local book = getDocumentInfo(assistant.ui.document)
-            local showFeatureDialog = require("assistant_featuredialog")
+            local showFeatureDialog = require("assistant_featuredialog").showFeatureDialog
             Trapper:wrap(function()
               showFeatureDialog(assistant, prompt_config, book.title, book.authors, book.percent_finished)
             end)
@@ -612,8 +618,6 @@ function Assistant:init()
   self.CONFIGURATION = CONFIGURATION
 
   -- Sync provider selection from configuration if configuration provider changed
-  self:syncProviderSelectionFromConfig()
-
   local model_provider = self:getModelProvider()
   if not model_provider then
     CONFIG_LOAD_ERROR = _("configuration.lua: model providers are invalid.")
@@ -654,6 +658,194 @@ function Assistant:init()
     if self.settings:readSetting("enable_auto_recap", false) then
       self:_hookRecap()
     end
+
+    -- X-Ray Dictionary: shared lookup helper
+    -- Matches word against dictionary entry names, aliases, and individual name words.
+    -- Returns (entry, entry_type, matched_name) or nil.
+    -- Stored on self so onDictButtonsReady can also use it.
+    function self:findXRayEntry(word, book_dict)
+      if not book_dict or not word or #word == 0 then return nil end
+      local word_lower = word:lower()
+
+      -- Check if word matches a name (exact or word-level) or alias
+      local function nameMatches(name)
+        if name:lower() == word_lower then return true end
+        -- Word-level: "Halliday" matches "James Donovan Halliday"
+        for part in name:gmatch("%S+") do
+          if part:lower() == word_lower then return true end
+        end
+        return false
+      end
+
+      if book_dict.characters then
+        for name, char in pairs(book_dict.characters) do
+          if nameMatches(name) then
+            return char, "character", name
+          end
+          for _, alias in ipairs(char.aliases or {}) do
+            if nameMatches(alias) then
+              return char, "character", name
+            end
+          end
+        end
+      end
+      if book_dict.locations then
+        for name, loc in pairs(book_dict.locations) do
+          if nameMatches(name) then
+            return loc, "location", name
+          end
+        end
+      end
+      if book_dict.terms then
+        for name, term in pairs(book_dict.terms) do
+          if nameMatches(name) then
+            return term, "term", name
+          end
+        end
+      end
+      return nil
+    end
+
+    -- X-Ray Dictionary: lookup + add buttons in highlight popup
+    -- Both buttons are always registered; show_in_highlight_dialog_func controls visibility.
+    -- KOReader requires every addToHighlightDialog callback to return a table (never nil).
+    self.ui.highlight:addToHighlightDialog("ai_xray_lookup", function(_reader_highlight_instance)
+      local selected = _reader_highlight_instance.selected_text
+      local word = selected and selected.text and FrontendUtil.trim(selected.text) or ""
+      -- Capture match state in upvalues for callback use
+      local entry, entry_type, matched_name
+      return {
+        text = _("X-Ray Lookup"),
+        show_in_highlight_dialog_func = function()
+          if #word == 0 or #word > 100 then return false end
+          local props = self.ui.document.getProps and self.ui.document:getProps() or {}
+          local book_hash = props.md5
+              or (self.ui.document.file and tostring(self.ui.document.file):gsub("[^%w]", "_"))
+          if not book_hash then return false end
+          local xray_data = self.settings:readSetting("xray_dictionary") or {}
+          local book_dict = xray_data[book_hash]
+          if not book_dict then return false end
+          entry, entry_type, matched_name = self:findXRayEntry(word, book_dict)
+          return entry ~= nil
+        end,
+        font_bold = true,
+        callback = function()
+          if not entry then return end
+          local parts = { "**" .. matched_name .. "**" }
+          if entry_type == "character" then
+            if entry.description and entry.description ~= "" then
+              table.insert(parts, "\n\n" .. entry.description)
+            end
+            if entry.relationships and entry.relationships ~= "" then
+              table.insert(parts, "\n\n*Relationships:* " .. entry.relationships)
+            end
+            if entry.aliases and #entry.aliases > 0 then
+              table.insert(parts, "\n\n*Also known as:* " .. table.concat(entry.aliases, ", "))
+            end
+          else
+            if entry.description and entry.description ~= "" then
+              table.insert(parts, " (" .. entry_type .. ")\n\n" .. entry.description)
+            end
+          end
+          UIManager:show(InfoMessage:new{
+            text = table.concat(parts),
+            width = Device.screen:getWidth() - Device.screen:scaleBySize(40),
+          })
+        end,
+      }
+    end)
+
+    self.ui.highlight:addToHighlightDialog("ai_xray_add", function(_reader_highlight_instance)
+      local selected = _reader_highlight_instance.selected_text
+      local word = selected and selected.text and FrontendUtil.trim(selected.text) or ""
+      local book_hash  -- computed in show_in_highlight_dialog_func, used by callback
+      return {
+        text = T(_("Add \"%1\" to X-Ray"), word),
+        show_in_highlight_dialog_func = function()
+          if #word == 0 or #word > 100 then return false end
+          local props = self.ui.document.getProps and self.ui.document:getProps() or {}
+          book_hash = props.md5
+              or (self.ui.document.file and tostring(self.ui.document.file):gsub("[^%w]", "_"))
+          if not book_hash then return false end
+          local xray_data = self.settings:readSetting("xray_dictionary") or {}
+          local book_dict = xray_data[book_hash]
+          if not book_dict then return true end  -- no dictionary yet, always offer to add
+          local found = self:findXRayEntry(word, book_dict)
+          return not found  -- show "Add" only when NOT in dictionary
+        end,
+        callback = function()
+          NetworkMgr:runWhenOnline(function()
+            Trapper:wrap(function()
+              local ok, err = self.querier:load_model(self:getModelProvider())
+              if not ok then
+                UIManager:show(InfoMessage:new{ icon = "notice-warning", text = err })
+                return
+              end
+
+              local book = getDocumentInfo(self.ui.document)
+              local language = self.settings:readSetting("response_language") or self.ui_language
+              local progress_percent = book.percent_finished or 0
+              local formatted_progress = string.format("%.2f", progress_percent * 100)
+
+              local prompts = require("assistant_prompts").assistant_prompts
+              local system_prompt = prompts.xray_single_term.system_prompt
+              local user_prompt = prompts.xray_single_term.user_prompt:gsub("{(%w+)}", {
+                title = book.title or "",
+                author = book.author or "",
+                progress = formatted_progress,
+                highlight = word,
+                language = language,
+              })
+
+              local message_history = {
+                { role = "system", content = system_prompt },
+                { role = "user", content = user_prompt },
+              }
+
+              local answer, query_err = self.querier:query(message_history, T(_("Looking up \"%1\"..."), word), { no_stream = true })
+              if query_err then
+                self.querier:showError(query_err)
+                return
+              end
+
+              -- Parse JSON from response
+              local featuredialog = require("assistant_featuredialog")
+              local index = featuredialog.extractXRayIndex(answer)
+              if not index then
+                UIManager:show(InfoMessage:new{
+                  text = T(_("Could not parse X-Ray data for \"%1\"."), word),
+                })
+                return
+              end
+
+              -- Merge into dictionary
+              local mergeXRayData = featuredialog.mergeXRayData
+
+              xray_data = self.settings:readSetting("xray_dictionary") or {}
+              xray_data[book_hash] = mergeXRayData(
+                xray_data[book_hash], index, formatted_progress)
+              self.settings:saveSetting("xray_dictionary", xray_data)
+              self.settings:flush()
+
+              -- Show confirmation with the entry details
+              local added = {}
+              for _, c in ipairs(index.characters or {}) do
+                table.insert(added, (c.name or "?") .. " (Character)")
+              end
+              for _, l in ipairs(index.locations or {}) do
+                table.insert(added, (l.name or "?") .. " (Location)")
+              end
+              for _, t in ipairs(index.terms or {}) do
+                table.insert(added, (t.name or "?") .. " (Term)")
+              end
+              UIManager:show(InfoMessage:new{
+                text = T(_("Added to X-Ray Dictionary:\n\n%1"), table.concat(added, "\n")),
+              })
+            end)
+          end)
+        end,
+      }
+    end)
 
     -- Add Custom buttons to main select popup menu
     local showOnMain = Prompts.getSortedCustomPrompts(function (prompt, idx)
@@ -775,72 +967,23 @@ function Assistant:onDictButtonsReady(dict_popup, dict_buttons)
   local plugin_buttons = {}
 
   -- X-Ray Dictionary lookup: instant, no AI call needed
-  if self.ui and self.ui.document then
+  if self.ui and self.ui.document and self.findXRayEntry then
     local props = self.ui.document.getProps and self.ui.document:getProps() or {}
     local book_hash = props.md5
         or (self.ui.document.file and tostring(self.ui.document.file):gsub("[^%w]", "_"))
     if book_hash then
       local xray_data = self.settings:readSetting("xray_dictionary") or {}
       local book_dict = xray_data[book_hash]
-      if book_dict and book_dict.characters then
+      if book_dict then
         local word = dict_popup.word
-        local word_lower = word and word:lower() or ""
-        -- Exact match by name
-        local entry = book_dict.characters[word]
-        -- If no exact match, try case-insensitive name match
-        if not entry then
-          for name, char in pairs(book_dict.characters) do
-            if name:lower() == word_lower then
-              entry = char
-              entry._matched_name = name
-              break
-            end
-          end
-        end
-        -- If still no match, check aliases
-        if not entry then
-          for name, char in pairs(book_dict.characters) do
-            for _, alias in ipairs(char.aliases or {}) do
-              if alias:lower() == word_lower then
-                entry = char
-                entry._matched_name = name
-                break
-              end
-            end
-            if entry then break end
-          end
-        end
-        -- Also check locations and terms
-        if not entry then
-          if book_dict.locations then
-            for name, loc in pairs(book_dict.locations) do
-              if name:lower() == word_lower then
-                entry = { description = loc.description, _type = "location", _matched_name = name }
-                break
-              end
-            end
-          end
-        end
-        if not entry then
-          if book_dict.terms then
-            for name, term in pairs(book_dict.terms) do
-              if name:lower() == word_lower then
-                entry = { description = term.description, _type = "term", _matched_name = name }
-                break
-              end
-            end
-          end
-        end
+        local entry, entry_type, matched_name = self:findXRayEntry(word, book_dict)
         if entry then
-          local display_name = entry._matched_name or word
-          local entry_type = entry._type or "character"
           table.insert(plugin_buttons, {
             id = "assistant_xray_dict",
             font_bold = true,
-            text = string.format("%s (X-Ray)", display_name),
+            text = string.format("%s (X-Ray)", matched_name),
             callback = function()
-              local text_parts = {}
-              table.insert(text_parts, "**" .. display_name .. "**")
+              local text_parts = { "**" .. matched_name .. "**" }
               if entry_type == "character" then
                 if entry.description and entry.description ~= "" then
                   table.insert(text_parts, "\n\n" .. entry.description)
@@ -856,11 +999,131 @@ function Assistant:onDictButtonsReady(dict_popup, dict_buttons)
                   table.insert(text_parts, " (" .. entry_type .. ")\n\n" .. entry.description)
                 end
               end
-              local InfoMessage = require("ui/widget/infomessage")
               UIManager:show(InfoMessage:new{
                 text = table.concat(text_parts),
-                width = Screen:getWidth() - Screen:scaleBySize(40),
+                width = Device.screen:getWidth() - Device.screen:scaleBySize(40),
               })
+            end,
+          })
+        else
+          -- Word not in dictionary — offer to add it
+          table.insert(plugin_buttons, {
+            id = "assistant_xray_add",
+            text = T(_("Add \"%1\" to X-Ray"), word),
+            callback = function()
+              NetworkMgr:runWhenOnline(function()
+                Trapper:wrap(function()
+                  local ok_load, load_err = self.querier:load_model(self:getModelProvider())
+                  if not ok_load then
+                    UIManager:show(InfoMessage:new{ icon = "notice-warning", text = load_err })
+                    return
+                  end
+                  local book = getDocumentInfo(self.ui.document)
+                  local language = self.settings:readSetting("response_language") or self.ui_language
+                  local progress_percent = book.percent_finished or 0
+                  local formatted_progress = string.format("%.2f", progress_percent * 100)
+                  local prompts = require("assistant_prompts").assistant_prompts
+                  local system_prompt = prompts.xray_single_term.system_prompt
+                  local user_prompt = prompts.xray_single_term.user_prompt:gsub("{(%w+)}", {
+                    title = book.title or "",
+                    author = book.author or "",
+                    progress = formatted_progress,
+                    highlight = word,
+                    language = language,
+                  })
+                  local message_history = {
+                    { role = "system", content = system_prompt },
+                    { role = "user", content = user_prompt },
+                  }
+                  local answer, query_err = self.querier:query(message_history, T(_("Looking up \"%1\"..."), word), { no_stream = true })
+                  if query_err then
+                    self.querier:showError(query_err)
+                    return
+                  end
+                  local featuredialog = require("assistant_featuredialog")
+                  local index = featuredialog.extractXRayIndex(answer)
+                  if not index then
+                    UIManager:show(InfoMessage:new{
+                      text = T(_("Could not parse X-Ray data for \"%1\"."), word),
+                    })
+                    return
+                  end
+                  local cur_xray = self.settings:readSetting("xray_dictionary") or {}
+                  cur_xray[book_hash] = featuredialog.mergeXRayData(
+                    cur_xray[book_hash], index, formatted_progress)
+                  self.settings:saveSetting("xray_dictionary", cur_xray)
+                  self.settings:flush()
+                  local added = {}
+                  for _, c in ipairs(index.characters or {}) do table.insert(added, (c.name or "?") .. " (Character)") end
+                  for _, l in ipairs(index.locations or {}) do table.insert(added, (l.name or "?") .. " (Location)") end
+                  for _, t in ipairs(index.terms or {}) do table.insert(added, (t.name or "?") .. " (Term)") end
+                  UIManager:show(InfoMessage:new{
+                    text = T(_("Added to X-Ray Dictionary:\n\n%1"), table.concat(added, "\n")),
+                  })
+                end)
+              end)
+            end,
+          })
+        end
+      else
+        -- No dictionary for this book yet — offer to add any word
+        local word = dict_popup.word
+        if word and #word > 0 then
+          table.insert(plugin_buttons, {
+            id = "assistant_xray_add",
+            text = T(_("Add \"%1\" to X-Ray"), word),
+            callback = function()
+              NetworkMgr:runWhenOnline(function()
+                Trapper:wrap(function()
+                  local ok_load, load_err = self.querier:load_model(self:getModelProvider())
+                  if not ok_load then
+                    UIManager:show(InfoMessage:new{ icon = "notice-warning", text = load_err })
+                    return
+                  end
+                  local book = getDocumentInfo(self.ui.document)
+                  local language = self.settings:readSetting("response_language") or self.ui_language
+                  local progress_percent = book.percent_finished or 0
+                  local formatted_progress = string.format("%.2f", progress_percent * 100)
+                  local prompts = require("assistant_prompts").assistant_prompts
+                  local system_prompt = prompts.xray_single_term.system_prompt
+                  local user_prompt = prompts.xray_single_term.user_prompt:gsub("{(%w+)}", {
+                    title = book.title or "",
+                    author = book.author or "",
+                    progress = formatted_progress,
+                    highlight = word,
+                    language = language,
+                  })
+                  local message_history = {
+                    { role = "system", content = system_prompt },
+                    { role = "user", content = user_prompt },
+                  }
+                  local answer, query_err = self.querier:query(message_history, T(_("Looking up \"%1\"..."), word), { no_stream = true })
+                  if query_err then
+                    self.querier:showError(query_err)
+                    return
+                  end
+                  local featuredialog = require("assistant_featuredialog")
+                  local index = featuredialog.extractXRayIndex(answer)
+                  if not index then
+                    UIManager:show(InfoMessage:new{
+                      text = T(_("Could not parse X-Ray data for \"%1\"."), word),
+                    })
+                    return
+                  end
+                  local cur_xray = self.settings:readSetting("xray_dictionary") or {}
+                  cur_xray[book_hash] = featuredialog.mergeXRayData(
+                    cur_xray[book_hash], index, formatted_progress)
+                  self.settings:saveSetting("xray_dictionary", cur_xray)
+                  self.settings:flush()
+                  local added = {}
+                  for _, c in ipairs(index.characters or {}) do table.insert(added, (c.name or "?") .. " (Character)") end
+                  for _, l in ipairs(index.locations or {}) do table.insert(added, (l.name or "?") .. " (Location)") end
+                  for _, t in ipairs(index.terms or {}) do table.insert(added, (t.name or "?") .. " (Term)") end
+                  UIManager:show(InfoMessage:new{
+                    text = T(_("Added to X-Ray Dictionary:\n\n%1"), table.concat(added, "\n")),
+                  })
+                end)
+              end)
             end,
           })
         end
@@ -973,7 +1236,7 @@ end
     if not self:isConfigured() then return end
     NetworkMgr:runWhenOnline(function()
       local book = getDocumentInfo(self.ui.document)
-      local showFeatureDialog = require("assistant_featuredialog")
+      local showFeatureDialog = require("assistant_featuredialog").showFeatureDialog
       Trapper:wrap(function()
         showFeatureDialog(self, "recap", book.title, book.authors, book.percent_finished)
       end)
@@ -985,7 +1248,7 @@ end
     if not self:isConfigured() then return end
     NetworkMgr:runWhenOnline(function()
       local book = getDocumentInfo(self.ui.document)
-      local showFeatureDialog = require("assistant_featuredialog")
+      local showFeatureDialog = require("assistant_featuredialog").showFeatureDialog
       Trapper:wrap(function()
         showFeatureDialog(self, "xray", book.title, book.authors, book.percent_finished)
       end)
@@ -997,7 +1260,7 @@ end
     if not self:isConfigured() then return end
     NetworkMgr:runWhenOnline(function()
       local book = getDocumentInfo(self.ui.document)
-      local showFeatureDialog = require("assistant_featuredialog")
+      local showFeatureDialog = require("assistant_featuredialog").showFeatureDialog
       Trapper:wrap(function()
         showFeatureDialog(self, "xray_dictionary_update", book.title, book.authors, book.percent_finished)
       end)
@@ -1043,7 +1306,7 @@ end
             end
             UIManager:show(InfoMessage:new{
               text = table.concat(parts),
-              width = Screen:getWidth() - Screen:scaleBySize(40),
+              width = Device.screen:getWidth() - Device.screen:scaleBySize(40),
             })
           end,
           _sort_key = "1_" .. name:lower(),
@@ -1058,7 +1321,7 @@ end
           callback = function()
             UIManager:show(InfoMessage:new{
               text = "**" .. name .. "** (Location)\n\n" .. (loc.description or ""),
-              width = Screen:getWidth() - Screen:scaleBySize(40),
+              width = Device.screen:getWidth() - Device.screen:scaleBySize(40),
             })
           end,
           _sort_key = "2_" .. name:lower(),
@@ -1073,7 +1336,7 @@ end
           callback = function()
             UIManager:show(InfoMessage:new{
               text = "**" .. name .. "** (Term)\n\n" .. (term.description or ""),
-              width = Screen:getWidth() - Screen:scaleBySize(40),
+              width = Device.screen:getWidth() - Device.screen:scaleBySize(40),
             })
           end,
           _sort_key = "3_" .. name:lower(),
@@ -1095,16 +1358,73 @@ end
 
     local Menu = require("ui/widget/menu")
     local Size = require("ui/size")
-    local dict_menu = Menu:new{
+    local all_items = menu_items
+
+    local function filterItems(query)
+      if not query or query == "" then return all_items end
+      local q = query:lower()
+      local filtered = {}
+      for _, item in ipairs(all_items) do
+        if item.text:lower():find(q, 1, true) then
+          table.insert(filtered, item)
+        end
+      end
+      return filtered
+    end
+
+    local dict_menu
+    dict_menu = Menu:new{
       title = T(_("X-Ray Dictionary (%1 entries)"), #menu_items),
       item_table = menu_items,
-      width = Screen:getWidth() - Size.margin.default * 2,
-      height = Screen:getHeight() - Size.margin.default * 2,
+      width = Device.screen:getWidth() - Size.margin.default * 2,
+      height = Device.screen:getHeight() - Size.margin.default * 2,
       items_per_page = 14,
       is_borderless = false,
       is_popout = false,
       onMenuChoice = function(self_menu, item)
         if item.callback then item.callback() end
+      end,
+      title_bar_left_icon = "appbar.search",
+      onLeftButtonTap = function()
+        local input_dialog
+        input_dialog = InputDialog:new{
+          title = _("Search Dictionary"),
+          input_hint = _("Enter character, location, or term name"),
+          buttons = {
+            {
+              {
+                text = _("Cancel"),
+                id = "close",
+                callback = function()
+                  UIManager:close(input_dialog)
+                end,
+              },
+              {
+                text = _("Clear"),
+                callback = function()
+                  dict_menu:switchItemTable(
+                    T(_("X-Ray Dictionary (%1 entries)"), #all_items),
+                    all_items)
+                  UIManager:close(input_dialog)
+                end,
+              },
+              {
+                text = _("Search"),
+                is_enter_default = true,
+                callback = function()
+                  local query = input_dialog:getInputText()
+                  UIManager:close(input_dialog)
+                  local results = filterItems(query)
+                  dict_menu:switchItemTable(
+                    T(_("X-Ray Dictionary: \"%1\" (%2 results)"), query, #results),
+                    results)
+                end,
+              },
+            },
+          },
+        }
+        UIManager:show(input_dialog)
+        input_dialog:onShowKeyboard()
       end,
     }
     UIManager:show(dict_menu)
@@ -1115,7 +1435,7 @@ end
     if not self:isConfigured() then return end
     NetworkMgr:runWhenOnline(function()
       local book = getDocumentInfo(self.ui.document)
-      local showFeatureDialog = require("assistant_featuredialog")
+      local showFeatureDialog = require("assistant_featuredialog").showFeatureDialog
       Trapper:wrap(function()
         showFeatureDialog(self, "book_info", book.title, book.authors, book.percent_finished)
       end)
@@ -1127,7 +1447,7 @@ end
     if not self:isConfigured() then return end
     NetworkMgr:runWhenOnline(function()
       local book = getDocumentInfo(self.ui.document)
-      local showFeatureDialog = require("assistant_featuredialog")
+      local showFeatureDialog = require("assistant_featuredialog").showFeatureDialog
       Trapper:wrap(function()
         showFeatureDialog(self, "annotations", book.title, book.authors, book.percent_finished)
       end)
@@ -1139,7 +1459,7 @@ end
     if not self:isConfigured() then return end
     NetworkMgr:runWhenOnline(function()
       local book = getDocumentInfo(self.ui.document)
-      local showFeatureDialog = require("assistant_featuredialog")
+      local showFeatureDialog = require("assistant_featuredialog").showFeatureDialog
       Trapper:wrap(function()
         showFeatureDialog(self, "summary_using_annotations", book.title, book.authors, book.percent_finished)
       end)
@@ -1279,7 +1599,7 @@ function Assistant:_hookRecap()
             ok_text         = _("Yes"),
             ok_callback     = function()
               NetworkMgr:runWhenOnline(function()
-                local showFeatureDialog = require("assistant_featuredialog")
+                local showFeatureDialog = require("assistant_featuredialog").showFeatureDialog
                 Trapper:wrap(function()
                   showFeatureDialog(assistant, "recap", title, authors, percent_finished)
                 end)
@@ -1291,25 +1611,6 @@ function Assistant:_hookRecap()
       end
       return ReaderUI._original_doShowReader(self, file, provider, seamless)
     end
-  end
-end
-
-function Assistant:syncProviderSelectionFromConfig()
-  -- Sync the selected provider from configuration.lua into settings only when
-  -- configuration provider changes compared to the last remembered value.
-  -- The remembered value is stored in settings as "previous_config_ai_provider".
-  local conf = self.CONFIGURATION
-  if not conf then return end
-
-  local config_provider = FrontendUtil.tableGetValue(conf, "provider")
-  if not config_provider or config_provider == "" then return end
-
-  local previous_config_ai_provider = self.settings:readSetting("previous_config_ai_provider")
-  if previous_config_ai_provider ~= config_provider then
-    -- Config changed (or first install). Mark config's provider as selected and remember it.
-    self.settings:saveSetting("provider", config_provider)
-    self.settings:saveSetting("previous_config_ai_provider", config_provider)
-    self.updated = true
   end
 end
 

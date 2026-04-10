@@ -155,7 +155,11 @@ function Querier:query(message_history, title, query_options)
         return nil, _("Plugin is not configured.")
     end
 
+    query_options = query_options or {}
     local use_stream_mode = self.settings:readSetting("use_stream_mode", true)
+    if query_options.no_stream then
+        use_stream_mode = false
+    end
     koutil.tableSetValue(self.provider_settings, use_stream_mode, "additional_parameters", "stream")
 
     -- Set up waiting animation for non-streaming mode
@@ -182,7 +186,11 @@ function Querier:query(message_history, title, query_options)
     end
     animation_task = UIManager:scheduleIn(0.4, updateInfoMessage)
 
-    self.handler:setTrapWidget(infomsg)
+    -- For non-streaming lightweight requests, skip the trap widget to avoid
+    -- running in a subprocess (SSL/OpenSSL doesn't survive fork).
+    if not query_options.no_stream then
+        self.handler:setTrapWidget(infomsg)
+    end
     local res, err = self.handler:query(trimMessageHistory(message_history), self.provider_settings, query_options)
     self.handler:resetTrapWidget()
 
@@ -427,7 +435,6 @@ function Querier:processStream(bgQuery, trunk_callback)
                         local ok, event = pcall(rapidjson.decode, json_str, {null = nil})
                         if ok and event then
                             local event_type = event.type
-                            logger.dbg("SSE event type:", event_type)
 
                             if event_type == "content_block_start" then
                                 local block_type = koutil.tableGetValue(event, "content_block", "type")
@@ -560,9 +567,6 @@ function Querier:processStream(bgQuery, trunk_callback)
     UIManager:scheduleIn(collect_interval_sec, collect_and_clean)
 
     local ret = koutil.trim(table.concat(result_buffer))
-    logger.info("processStream completed: result_buffer entries:", #result_buffer,
-        "non200:", non200, "user_interrupted:", self.user_interrupted,
-        "ret length:", #ret, "ret preview:", ret:sub(1, 100))
     if non200 then
         -- try to parse the json, returns only message from the API.
         if ret:sub(1, 1) == '{' then

@@ -51,8 +51,12 @@ end
 --- @param maxtime any total response finished max time
 --- @return boolean success, string status_code, string content
 local function postURLContent(url, headers, body, timeout, maxtime)
+    -- Use https.request directly for HTTPS URLs — http.request delegation
+    -- to ssl.https may not work in forked subprocesses.
+    local http_request = http.request
     if string.sub(url, 1, 8) == "https://" then
-        https.cert_verify = false  -- disable CA verify
+        https.cert_verify = false
+        http_request = https.request
     end
 
     local sink = {}
@@ -64,7 +68,7 @@ local function postURLContent(url, headers, body, timeout, maxtime)
         source = ltn12.source.string(body or ""),
         sink = maxtime and socketutil.table_sink(sink) or ltn12.sink.table(sink),
     }
-    local code, headers, status = socket.skip(1, http.request(request)) -- skip the first return value, not needed
+    local code, headers, status = socket.skip(1, http_request(request))
     socketutil:reset_timeout()
     local content = table.concat(sink)  -- response body
 
@@ -79,7 +83,7 @@ local function postURLContent(url, headers, body, timeout, maxtime)
     -- check for network errors
     if headers == nil then
         logger.warn("No HTTP headers:", status or code or "network unreachable")
-        return false, BaseHandler.CODE_NETWORK_ERROR, "Network Error: " .. status or code
+        return false, BaseHandler.CODE_NETWORK_ERROR, "Network Error: " .. tostring(status or code)
     end
 
     -- check response length
@@ -146,26 +150,51 @@ end
 --- This function is used to make a request in the background,
 --- typically in a subprocess, and write the response to a pipe.
 function BaseHandler:backgroundRequest(url, headers, body)
+    local PROTOCOL_NON_200 = self.PROTOCOL_NON_200
     return function(pid, child_write_fd)
         if not pid or not child_write_fd then
-            logger.warn("Invalid parameters for background request")
             return
         end
 
-        local pipe_w = wrap_fd(child_write_fd)  -- wrap the write end of the pipe
-        local request = {
-            url = url,
-            method = "POST",
-            headers = headers or {},
-            source = ltn12.source.string(body or ""),
-            sink = ltn12.sink.file(pipe_w),  -- response body write to pipe
-        }
-        local code, headers, status = socket.skip(1, http.request(request)) -- skip the first return value
-        if code ~= 200 then -- non-200 response code, write error to pipe
-            logger.warn("Background request non-200:", code, "status:", status, "url:", url)
-            ffiutil.writeToFD(child_write_fd, string.format("\r\n%s [%s %s] URL:%s\n\n", self.PROTOCOL_NON_200, status or "", code or "", url))  -- write end of response
+        -- Disable SSL cert verification (must be set in child process)
+        if string.sub(url, 1, 8) == "https://" then
+            https.cert_verify = false
         end
-        ffi.C.close(child_write_fd)  -- close the write end of the pipe
+
+        local pipe_w = wrap_fd(child_write_fd)
+        -- Ensure Content-Length is set (required by LuaSocket for POST with source)
+        headers = headers or {}
+        if body and not headers["content-length"] and not headers["Content-Length"] then
+            headers["content-length"] = tostring(#body)
+        end
+        -- Use https.request directly for HTTPS (http.request delegation may
+        -- not work in forked subprocess)
+        local http_request = http.request
+        if string.sub(url, 1, 8) == "https://" then
+            http_request = https.request
+        end
+        local ok, err = pcall(function()
+            local request = {
+                url = url,
+                method = "POST",
+                headers = headers,
+                source = ltn12.source.string(body or ""),
+                sink = ltn12.sink.file(pipe_w),
+            }
+            local code, resp_headers, status = socket.skip(1, http_request(request))
+            if code ~= 200 then
+                ffiutil.writeToFD(child_write_fd, string.format(
+                    "\r\n%s [%s %s] URL:%s\n\n",
+                    PROTOCOL_NON_200, status or "", code or "", url))
+            end
+        end)
+        if not ok then
+            -- Write the error so the parent process can report it
+            ffiutil.writeToFD(child_write_fd, string.format(
+                "\r\n%s [Subprocess error: %s]\n\n",
+                PROTOCOL_NON_200, tostring(err)))
+        end
+        ffi.C.close(child_write_fd)
     end
 end
 
