@@ -267,8 +267,29 @@ function Querier:query(message_history, title, query_options)
         animation_task = UIManager:scheduleIn(0.4, updateAnimation)
 
         local stream_mode_auto_scroll = self.settings:readSetting("stream_mode_auto_scroll", true)
-        local ok, content, err = pcall(self.processStream, self, res, function (content, buffer)
+        local original_title = streamDialog.title_bar.title
+        local ok, content, err = pcall(self.processStream, self, res, function (content, buffer, signal)
             UIManager:nextTick(function ()
+                -- Handle stream status signals
+                if signal == "thinking_start" then
+                    streamDialog.title_bar.title = _("Claude is thinking...")
+                    UIManager:setDirty(streamDialog, function()
+                        return "fast", streamDialog.title_bar.dimen
+                    end)
+                    return
+                elseif signal == "web_search_start" then
+                    streamDialog.title_bar.title = _("Searching the web...")
+                    UIManager:setDirty(streamDialog, function()
+                        return "fast", streamDialog.title_bar.dimen
+                    end)
+                    return
+                elseif signal == "text_start" then
+                    streamDialog.title_bar.title = original_title
+                    UIManager:setDirty(streamDialog, function()
+                        return "fast", streamDialog.title_bar.dimen
+                    end)
+                end
+
                 -- Stop animation on first content
                 if not first_content_received and content and #tostring(content) > 0 then
                     first_content_received = true
@@ -346,6 +367,9 @@ function Querier:processStream(bgQuery, trunk_callback)
     local completed = false   -- Flag to indicate if the reading is completed
     local partial_data = ""   -- Buffer for incomplete line data
     local result_buffer = {}  -- Buffer for storing results
+    local is_in_thinking_block = false
+    local is_in_tool_block = false
+    local output_tokens = 0
 
     while true do  
 
@@ -396,14 +420,60 @@ function Querier:processStream(bgQuery, trunk_callback)
                         -- Safely parse the JSON
                         local ok, event = pcall(rapidjson.decode, json_str, {null = nil})
                         if ok and event then
-                            local content
-                            -- Anthropic streaming: content_block_delta events
-                            content = koutil.tableGetValue(event, "delta", "text")
-                                or koutil.tableGetValue(event, "content", 1, "text")
+                            local event_type = event.type
 
-                            if type(content) == "string" and #content > 0 then
-                                table.insert(result_buffer, content)
-                                if trunk_callback then trunk_callback(content, result_buffer) end
+                            if event_type == "content_block_start" then
+                                local block_type = koutil.tableGetValue(event, "content_block", "type")
+                                if block_type == "thinking" then
+                                    is_in_thinking_block = true
+                                    is_in_tool_block = false
+                                    if trunk_callback then
+                                        trunk_callback(nil, result_buffer, "thinking_start")
+                                    end
+                                elseif block_type == "tool_use" then
+                                    is_in_tool_block = true
+                                    is_in_thinking_block = false
+                                    local tool_name = koutil.tableGetValue(event, "content_block", "name")
+                                    if tool_name == "web_search" then
+                                        if trunk_callback then
+                                            trunk_callback(nil, result_buffer, "web_search_start")
+                                        end
+                                    end
+                                elseif block_type == "text" then
+                                    is_in_thinking_block = false
+                                    is_in_tool_block = false
+                                    if trunk_callback then
+                                        trunk_callback(nil, result_buffer, "text_start")
+                                    end
+                                end
+
+                            elseif event_type == "content_block_delta" then
+                                local delta_type = koutil.tableGetValue(event, "delta", "type")
+                                if delta_type == "text_delta" and not is_in_thinking_block and not is_in_tool_block then
+                                    local text = koutil.tableGetValue(event, "delta", "text")
+                                    if type(text) == "string" and #text > 0 then
+                                        table.insert(result_buffer, text)
+                                        if trunk_callback then trunk_callback(text, result_buffer) end
+                                    end
+                                end
+
+                            elseif event_type == "message_delta" then
+                                local usage = koutil.tableGetValue(event, "usage")
+                                if usage then
+                                    output_tokens = koutil.tableGetValue(usage, "output_tokens") or 0
+                                end
+
+                            elseif event_type == "message_stop" then
+                                completed = true
+
+                            else
+                                -- For events without a type field, fall back to direct text extraction
+                                local content = koutil.tableGetValue(event, "delta", "text")
+                                    or koutil.tableGetValue(event, "content", 1, "text")
+                                if type(content) == "string" and #content > 0 then
+                                    table.insert(result_buffer, content)
+                                    if trunk_callback then trunk_callback(content, result_buffer) end
+                                end
                             end
                         else
                             logger.warn("Failed to parse JSON from SSE data:", json_str)
