@@ -75,7 +75,8 @@ local function showFeatureDialog(assistant, feature_type, title, author, progres
                 title = _("Book Information"),
                 loading_message = _("Loading Book Information..."),
                 config_key = "book_info_config",
-                prompts_key = "book_info"
+                prompts_key = "book_info",
+                web_search = true,
             },
             annotations = {
                 title = _("Highlight & Note Analysis"),
@@ -200,6 +201,13 @@ local function showFeatureDialog(assistant, feature_type, title, author, progres
         query_options.cache_book_text = true
         query_options.book_text = string.format(
             "[BOOK TEXT BEGIN]\n%s\n[BOOK TEXT END]", book_text)
+    end
+
+    -- Web search (from feature config)
+    local web_search = (type(feature_type) == "table" and feature_type.web_search)
+        or (feature_config and feature_config.web_search)
+    if web_search then
+        query_options.web_search = true
     end
 
     local answer, err = Querier:query(message_history, loading_message, query_options)
