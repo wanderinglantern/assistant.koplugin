@@ -38,44 +38,33 @@ function Querier:is_inited()
     return self.handler ~= nil
 end
 
---- Load provider model for the Querier
+--- Load the Anthropic model for the Querier
 function Querier:load_model(provider_name)
-    -- If the provider is already loaded, do nothing.
-    if provider_name == self.provider_name and self:is_inited() then
+    -- provider_name is kept as a parameter for call-site compatibility
+    -- but we always load the anthropic handler
+    if self:is_inited() then
         return true
     end
 
     local CONFIGURATION = self.assistant.CONFIGURATION
-    local provider_settings = koutil.tableGetValue(CONFIGURATION, "provider_settings", provider_name)
+    local provider_settings = koutil.tableGetValue(CONFIGURATION, "provider_settings", "anthropic")
     if not provider_settings then
-        local err = T(_("Provider settings not found for: %1. Please check your configuration.lua file."),
-         provider_name)
+        local err = _("Anthropic provider settings not found. Please check your configuration.lua file.")
         logger.warn("Querier initialization failed: " .. err)
         return false, err
     end
 
-    local handler_name
-    local underscore_pos = provider_name:find("_")
-    if underscore_pos and underscore_pos > 0 then
-        -- Extract `openai` from `openai_o4mimi`
-        handler_name = provider_name:sub(1, underscore_pos - 1)
-    else
-        handler_name = provider_name -- original name
-    end
-
-    -- Load the handler based on the provider name
     local success, handler = pcall(function()
-        return require("api_handlers." .. handler_name)
+        return require("api_handlers.anthropic")
     end)
     if success then
         self.handler = handler
-        self.handler_name = handler_name
+        self.handler_name = "anthropic"
         self.provider_settings = provider_settings
-        self.provider_name = provider_name
+        self.provider_name = "anthropic"
         return true
     else
-        local err = T(_("The handler for %1 was not found. Please ensure the handler exists in api_handlers directory."),
-                handler_name)
+        local err = _("Failed to load Anthropic handler. Please ensure api_handlers/anthropic.lua exists.")
         logger.warn("Querier initialization failed: " .. err)
         return false, err
     end
@@ -107,7 +96,7 @@ function Querier:showError(err)
         dialog = InfoMessage:new{ timeout = 3, text = err }
     else
         dialog = ConfirmBox:new{
-            text = T(_("API Error:\n%1\n\nTry another provider in the settings dialog."), err or _("Unknown error")),
+            text = T(_("API Error:\n%1"), err or _("Unknown error")),
             ok_text = _("Settings"),
             ok_callback = function() self.assistant:showSettings() end,
             cancel_text = _("Close"),
@@ -170,7 +159,7 @@ function Querier:query(message_history, title)
 
     local infomsg = InfoMessage:new{
       icon = "book.opened",
-      text = string.format("%s\n️☁️ %s\n⚡ %s", title or _("Querying AI ..."), self.provider_name,
+      text = string.format("%s\n⚡ %s", title or _("Querying AI ..."),
             koutil.tableGetValue(self.provider_settings, "model")),
     }
 
@@ -232,7 +221,7 @@ function Querier:query(message_history, title)
 
         streamDialog = InputDialog:new{
             title = _("AI is responding"),
-            description = T("☁ %1/%2", self.provider_name, koutil.tableGetValue(self.provider_settings, "model")),
+            description = T("⚡ %1", koutil.tableGetValue(self.provider_settings, "model")),
             inputtext_class = StreamText, -- use our custom InputText class
             input_face = Font:getFace("infofont", self.settings:readSetting("response_font_size") or 20),
             title_bar_left_icon = "appbar.settings",
@@ -357,7 +346,6 @@ function Querier:processStream(bgQuery, trunk_callback)
     local completed = false   -- Flag to indicate if the reading is completed
     local partial_data = ""   -- Buffer for incomplete line data
     local result_buffer = {}  -- Buffer for storing results
-    local reasoning_content_buffer = {}  -- Buffer for storing results
 
     while true do  
 
@@ -408,34 +396,14 @@ function Querier:processStream(bgQuery, trunk_callback)
                         -- Safely parse the JSON
                         local ok, event = pcall(rapidjson.decode, json_str, {null = nil})
                         if ok and event then
-                        
-                            local reasoning_content, content
+                            local content
+                            -- Anthropic streaming: content_block_delta events
+                            content = koutil.tableGetValue(event, "delta", "text")
+                                or koutil.tableGetValue(event, "content", 1, "text")
 
-                            local choice = koutil.tableGetValue(event, "choices", 1)
-                            if choice then -- OpenAI (compatiable) API
-                                if koutil.tableGetValue(choice, "finish_reason") then content="\n" end
-                                local delta = koutil.tableGetValue(choice, "delta")
-                                if delta then
-                                    reasoning_content = koutil.tableGetValue(delta, "reasoning_content")
-                                    content = koutil.tableGetValue(delta, "content")
-                                    -- gork4 ouputs empty reasoning messages, logs '.' here to indicate the process works
-                                    if not content and not reasoning_content then reasoning_content = "." end
-                                end
-                            else
-                                content =
-                                    koutil.tableGetValue(event, "candidates", 1, "content", "parts", 1, "text") or  -- Genmini API
-                                    koutil.tableGetValue(event, "delta", "text") or   -- Anthropic streaming (content_block_delta)
-                                    koutil.tableGetValue(event, "content", 1, "text") -- Anthropic non-stream message event
-                            end
-                                
                             if type(content) == "string" and #content > 0 then
                                 table.insert(result_buffer, content)
                                 if trunk_callback then trunk_callback(content, result_buffer) end
-                            elseif type(reasoning_content) == "string" and #reasoning_content > 0 then
-                                table.insert(reasoning_content_buffer, reasoning_content)
-                                if trunk_callback then trunk_callback(reasoning_content, reasoning_content_buffer) end
-                            elseif content == nil and reasoning_content == nil then
-                                logger.warn("Unexpected SSE data:", json_str)
                             end
                         else
                             logger.warn("Failed to parse JSON from SSE data:", json_str)
@@ -522,24 +490,14 @@ function Querier:processStream(bgQuery, trunk_callback)
             if endPos and endPos > 0 then
                 local ok, j = pcall(rapidjson.decode, ret:sub(1, #ret - endPos + 1), {null=nil})
                 if ok then
-                    local err
-                    err = koutil.tableGetValue(j, "error", "message") -- OpenAI / Anthropic / Gemini 
-                    if err then return nil, err end
-                    err = koutil.tableGetValue(j, "message") -- Mistral / Cohere
-                    if err then return nil, err end
+                    local api_err = koutil.tableGetValue(j, "error", "message")
+                    if api_err then return nil, api_err end
                 end
             end
         end
 
         -- return all received content as error message
         return nil, ret
-    else
-        local reasoning = table.concat(reasoning_content_buffer):gsub("^%.+", "", 1)
-        if #reasoning > 0 then
-            ret = T("<dl><dt>%1</dt><dd>%2</dd></dl>\n\n%3", _("Deeply Thought"), reasoning, ret)
-        elseif ret:sub(1, 7) == "<think>" then
-            ret = ret:gsub("<think>", T("<dl><dt>%1</dt><dd>", _("Deeply Thought")), 1):gsub("</think>", "</dd></dl>", 1)
-        end
     end
     return ret, nil
 end
