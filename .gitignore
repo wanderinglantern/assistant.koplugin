@@ -7,3 +7,4 @@ _*.po
 .DS_Store
 .vscode
 CLAUDE.md
+deploy-test.sh
