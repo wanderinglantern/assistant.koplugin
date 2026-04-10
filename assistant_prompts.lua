@@ -361,6 +361,24 @@ Formatting rules:
 Generate the expanded X‑Ray for **{title}** by **{author}**, with the structure described above.
 Reader progress: **{progress}%**.
 Language: **{language}**.
+
+After your complete narrative X-Ray above, output a machine-readable index as a JSON code block.
+This JSON will be used to build a persistent character/entity dictionary for quick lookups.
+Include ALL characters, locations, and key terms from your X-Ray:
+
+```json
+{
+  "characters": [
+    { "name": "Primary Name", "aliases": ["Alt Name", "Title"], "description": "Brief description", "relationships": "Key relationships" }
+  ],
+  "locations": [
+    { "name": "Place Name", "description": "Brief description and significance" }
+  ],
+  "terms": [
+    { "name": "Term", "description": "Concise definition or significance" }
+  ]
+}
+```
         ]],
     },
     book_info = {
