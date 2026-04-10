@@ -16,6 +16,76 @@ local assistant_utils = require("assistant_utils")
 local extractBookTextForAnalysis = assistant_utils.extractBookTextForAnalysis
 local extractHighlightsNotesAndNotebook = assistant_utils.extractHighlightsNotesAndNotebook
 local normalizeMarkdownHeadings = assistant_utils.normalizeMarkdownHeadings
+local json = require("json")
+
+--- Extract structured index from X-Ray response JSON code block
+local function extractXRayIndex(answer)
+    if not answer then return nil end
+    -- Match ```json ... ``` block (the JSON index appended to X-Ray responses)
+    local json_str = answer:match("```json%s*\n(.-)```")
+    if not json_str then return nil end
+    local ok, data = pcall(json.decode, json_str)
+    if not ok or type(data) ~= "table" then return nil end
+    return data  -- { characters = [...], locations = [...], terms = [...] }
+end
+
+--- Merge new X-Ray index data into existing dictionary for a book
+local function mergeXRayData(existing, new_data, progress_percent)
+    existing = existing or { characters = {}, locations = {}, terms = {} }
+
+    -- Merge characters by primary name
+    for _, entry in ipairs(new_data.characters or {}) do
+        if entry.name then
+            local key = entry.name
+            local curr = existing.characters[key]
+            if curr then
+                -- Merge aliases without duplicates
+                local alias_set = {}
+                for _, a in ipairs(curr.aliases or {}) do alias_set[a:lower()] = a end
+                for _, a in ipairs(entry.aliases or {}) do
+                    if not alias_set[a:lower()] then
+                        table.insert(curr.aliases, a)
+                        alias_set[a:lower()] = a
+                    end
+                end
+                -- Update description and relationships with newer data
+                curr.description = entry.description or curr.description
+                curr.relationships = entry.relationships or curr.relationships
+                curr.updated_progress = progress_percent
+            else
+                existing.characters[key] = {
+                    description = entry.description or "",
+                    relationships = entry.relationships or "",
+                    aliases = entry.aliases or {},
+                    updated_progress = progress_percent,
+                }
+            end
+        end
+    end
+
+    -- Merge locations by name
+    for _, entry in ipairs(new_data.locations or {}) do
+        if entry.name then
+            existing.locations[entry.name] = {
+                description = entry.description or "",
+                updated_progress = progress_percent,
+            }
+        end
+    end
+
+    -- Merge terms by name
+    for _, entry in ipairs(new_data.terms or {}) do
+        if entry.name then
+            existing.terms[entry.name] = {
+                description = entry.description or "",
+                updated_progress = progress_percent,
+            }
+        end
+    end
+
+    existing.last_progress = progress_percent
+    return existing
+end
 
 local function showFeatureDialog(assistant, feature_type, title, author, progress_percent, message_history)
     local CONFIGURATION = assistant.CONFIGURATION
@@ -220,6 +290,26 @@ local function showFeatureDialog(assistant, feature_type, title, author, progres
       role = "assistant",
       content = answer
     })
+
+    -- Extract and persist X-Ray dictionary data
+    if feature_type == "xray" then
+        local index = extractXRayIndex(answer)
+        if index then
+            local props = ui.document and ui.document.getProps and ui.document:getProps() or {}
+            local book_hash = props.md5
+                or (ui.document and ui.document.file and tostring(ui.document.file):gsub("[^%w]", "_"))
+                or "unknown"
+            local xray_data = assistant.settings:readSetting("xray_dictionary") or {}
+            xray_data[book_hash] = mergeXRayData(
+                xray_data[book_hash],
+                index,
+                formatted_progress_percent
+            )
+            assistant.settings:saveSetting("xray_dictionary", xray_data)
+            assistant.settings:flush()
+            logger.info("X-Ray dictionary updated for book:", book_hash)
+        end
+    end
 
     local chatgpt_viewer
     chatgpt_viewer = ChatGPTViewer:new {
