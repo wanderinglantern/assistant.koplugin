@@ -283,7 +283,7 @@ function Assistant:addToMainMenu(menu_items)
               },
               {
                 text_func = function ()
-                  return T(_("AI Provider: %1"), self:getModelProvider() or _("Not configured"))
+                  return T(_("AI Model: %1"), FrontendUtil.tableGetValue(CONFIGURATION, "provider_settings", "anthropic", "model") or _("Not configured"))
                 end,
                 keep_menu_open = true,
                 callback = function (touchmenu_instance)
@@ -377,7 +377,7 @@ function Assistant:addToMainMenu(menu_items)
                 },
                 {
                     text_func = function ()
-                      return T(_("AI Provider: %1"), self:getModelProvider() or _("Not configured"))
+                      return T(_("AI Model: %1"), FrontendUtil.tableGetValue(CONFIGURATION, "provider_settings", "anthropic", "model") or _("Not configured"))
                     end,
                     keep_menu_open = true,
                     callback = function (touchmenu_instance)
@@ -477,67 +477,24 @@ function Assistant:showSettings(close_callback)
 end
 
 function Assistant:getModelProvider()
-
   if type(CONFIGURATION) ~= "table" then
     return nil
   end
 
-  local provider_settings = CONFIGURATION.provider_settings -- provider settings table from configuration.lua
+  local provider_settings = CONFIGURATION.provider_settings
   if type(provider_settings) ~= "table" then
     return nil
   end
-  local setting_provider = self.settings:readSetting("provider")
 
-  local function is_provider_valid(key)
-    if not key then return false end
-    local provider = FrontendUtil.tableGetValue(CONFIGURATION, "provider_settings", key)
-    return provider and FrontendUtil.tableGetValue(provider, "model") and
-        FrontendUtil.tableGetValue(provider, "base_url") and
-        FrontendUtil.tableGetValue(provider, "api_key")
+  local anthropic = FrontendUtil.tableGetValue(CONFIGURATION, "provider_settings", "anthropic")
+  if anthropic and FrontendUtil.tableGetValue(anthropic, "model")
+      and FrontendUtil.tableGetValue(anthropic, "base_url")
+      and FrontendUtil.tableGetValue(anthropic, "api_key") then
+    return "anthropic"
   end
 
-  local function find_setting_provider(filter_func)
-    for key, tab in pairs(provider_settings) do
-      if is_provider_valid(key) then
-        if filter_func and filter_func(key, tab) then return key end
-        if not filter_func then return key end
-      end
-    end
-    return nil
-  end
-
-  if is_provider_valid(setting_provider) then
-    -- If the setting provider is valid, use it
-    return setting_provider
-  else
-    -- If the setting provider is invalid, delete this selection
-    self.settings:delSetting("provider")
-
-    local conf_provider = CONFIGURATION.provider -- provider name from configuration.lua
-    if is_provider_valid(conf_provider) then
-      -- if the configuration provider is valid, use it
-      setting_provider = conf_provider
-    else
-      -- try to find the one defined with `default = true`
-      setting_provider = find_setting_provider(function(key, tab)
-        return FrontendUtil.tableGetValue(tab, "default") == true
-      end)
-      
-      -- still invalid (none of them defined `default`)
-      if not setting_provider then
-        setting_provider = find_setting_provider()
-        logger.warn("Invalid provider setting found, using a random one: ", setting_provider)
-      end
-    end
-
-    if not setting_provider then
-      CONFIG_LOAD_ERROR = _("No valid model provider is found in the configuration.lua")
-      return nil
-    end -- if still not found, the configuration is wrong
-    self.settings:saveSetting("provider", setting_provider)
-    self.updated = true -- mark settings as updated
-  end
-  return setting_provider
+  CONFIG_LOAD_ERROR = _("Anthropic provider not configured. Please check your configuration.lua file.")
+  return nil
 end
 
 -- Flush settings to disk, triggered by koreader
