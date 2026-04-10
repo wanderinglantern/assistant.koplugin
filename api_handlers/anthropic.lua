@@ -79,6 +79,16 @@ function AnthropicHandler:query(message_history, anthropic_settings, query_optio
         requestBodyTable.tools = tools
     end
 
+    -- Web search tool (built-in Anthropic tool, enabled via query_options)
+    if query_options.web_search then
+        requestBodyTable.tools = requestBodyTable.tools or {}
+        table.insert(requestBodyTable.tools, {
+            type = "web_search_20250305",
+            name = "web_search",
+            max_uses = 3,
+        })
+    end
+
     -- Extended thinking
     local thinking_budget = query_options and query_options.thinking_budget
     if thinking_budget and thinking_budget >= 1024 then
