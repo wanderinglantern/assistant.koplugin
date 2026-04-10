@@ -40,6 +40,31 @@ local function prepare_anthropic_messages(message_history, options)
         end
     end
 
+    -- Optionally add a document block with citations to the first user message
+    if options.citations_book_text then
+        for i, msg in ipairs(anthropic_messages) do
+            if msg.role == "user" then
+                anthropic_messages[i].content = {
+                    {
+                        type = "document",
+                        source = {
+                            type = "text",
+                            media_type = "text/plain",
+                            data = options.citations_book_text,
+                        },
+                        title = options.book_title or "Book Text",
+                        citations = { enabled = true },
+                    },
+                    {
+                        type = "text",
+                        text = type(msg.content) == "string" and msg.content or "",
+                    },
+                }
+                break
+            end
+        end
+    end
+
     return {
         messages = anthropic_messages,
         -- If only one text block with no cache_control, fall back to plain string
@@ -107,6 +132,15 @@ function AnthropicHandler:query(message_history, anthropic_settings, query_optio
     }
     if thinking_budget and thinking_budget >= 1024 then
         headers["anthropic-beta"] = "interleaved-thinking-2025-05-14"
+    end
+    if query_options.citations_book_text then
+        -- Combine beta headers if both thinking and citations are active
+        local existing_beta = headers["anthropic-beta"]
+        if existing_beta then
+            headers["anthropic-beta"] = existing_beta .. ",citations-2025-05-06"
+        else
+            headers["anthropic-beta"] = "citations-2025-05-06"
+        end
     end
     if requestBodyTable.stream then
         -- For streaming responses, we need to handle the response differently
