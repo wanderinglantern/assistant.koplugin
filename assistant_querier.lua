@@ -144,7 +144,7 @@ end
 
 --- Query the AI with the provided message history
 --- return: answer, error (if any)
-function Querier:query(message_history, title)
+function Querier:query(message_history, title, query_options)
     if not self:is_inited() then
         return nil, _("Plugin is not configured.")
     end
@@ -177,7 +177,7 @@ function Querier:query(message_history, title)
     animation_task = UIManager:scheduleIn(0.4, updateInfoMessage)
 
     self.handler:setTrapWidget(infomsg)
-    local res, err = self.handler:query(trimMessageHistory(message_history), self.provider_settings)
+    local res, err = self.handler:query(trimMessageHistory(message_history), self.provider_settings, query_options)
     self.handler:resetTrapWidget()
 
     -- Stop animation
