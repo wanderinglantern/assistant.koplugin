@@ -141,6 +141,13 @@ local function showFeatureDialog(assistant, feature_type, title, author, progres
                 prompts_key = "xray",
                 thinking_budget = 10000,
             },
+            xray_dictionary_update = {
+                title = _("Update Dictionary"),
+                loading_message = _("Updating dictionary..."),
+                config_key = "xray_config",
+                prompts_key = "xray_dictionary_update",
+                thinking_budget = 5000,
+            },
             book_info = {
                 title = _("Book Information"),
                 loading_message = _("Loading Book Information..."),
@@ -189,7 +196,7 @@ local function showFeatureDialog(assistant, feature_type, title, author, progres
 
         book_text = nil
         highlights_notes = nil
-        if feature_type == "xray" or feature_type == "recap" then
+        if feature_type == "xray" or feature_type == "recap" or feature_type == "xray_dictionary_update" then
           if assistant.settings:readSetting("use_book_text_for_analysis", false) then
             book_text = extractBookTextForAnalysis(CONFIGURATION, ui)
           end
@@ -223,12 +230,70 @@ local function showFeatureDialog(assistant, feature_type, title, author, progres
         },
     }
     
+    -- Check for existing X-Ray dictionary data for incremental mode
+    local last_progress_str = "0"
+    local known_entities_str = ""
+    if feature_type == "xray" or feature_type == "xray_dictionary_update" then
+        local props = ui.document and ui.document.getProps and ui.document:getProps() or {}
+        local book_hash = props.md5
+            or (ui.document and ui.document.file and tostring(ui.document.file):gsub("[^%w]", "_"))
+            or "unknown"
+        local xray_data = assistant.settings:readSetting("xray_dictionary") or {}
+        local book_dict = xray_data[book_hash]
+        if book_dict and book_dict.last_progress then
+            last_progress_str = tostring(book_dict.last_progress)
+            -- Build a compact summary of known entities
+            local parts = {}
+            if book_dict.characters then
+                local names = {}
+                for name, data in pairs(book_dict.characters) do
+                    table.insert(names, name)
+                end
+                if #names > 0 then
+                    table.insert(parts, "Characters: " .. table.concat(names, ", "))
+                end
+            end
+            if book_dict.locations then
+                local names = {}
+                for name, data in pairs(book_dict.locations) do
+                    table.insert(names, name)
+                end
+                if #names > 0 then
+                    table.insert(parts, "Locations: " .. table.concat(names, ", "))
+                end
+            end
+            if book_dict.terms then
+                local names = {}
+                for name, data in pairs(book_dict.terms) do
+                    table.insert(names, name)
+                end
+                if #names > 0 then
+                    table.insert(parts, "Terms: " .. table.concat(names, ", "))
+                end
+            end
+            known_entities_str = table.concat(parts, "\n")
+
+            -- For full X-Ray, prepend the incremental prefix
+            if feature_type == "xray" and tonumber(last_progress_str) > 0 then
+                local incremental_prefix = assistant_prompts.xray_incremental_prefix or ""
+                incremental_prefix = incremental_prefix:gsub("{(%w+)}", {
+                    last_progress = last_progress_str,
+                    progress = formatted_progress_percent,
+                    known_entities = known_entities_str,
+                })
+                user_prompt_template = incremental_prefix .. user_prompt_template
+            end
+        end
+    end
+
     -- Format the user prompt with variables
     local user_content = user_prompt_template:gsub("{(%w+)}", {
       title = title,
       author = author,
       progress = formatted_progress_percent,
-      language = language
+      language = language,
+      last_progress = last_progress_str,
+      known_entities = known_entities_str,
     })
 
     user_content = user_content .. book_text_prompt .. highlights_notes_prompt
@@ -292,7 +357,7 @@ local function showFeatureDialog(assistant, feature_type, title, author, progres
     })
 
     -- Extract and persist X-Ray dictionary data
-    if feature_type == "xray" then
+    if feature_type == "xray" or feature_type == "xray_dictionary_update" then
         local index = extractXRayIndex(answer)
         if index then
             local props = ui.document and ui.document.getProps and ui.document:getProps() or {}

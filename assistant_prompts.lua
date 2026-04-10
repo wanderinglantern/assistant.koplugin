@@ -381,6 +381,50 @@ Include ALL characters, locations, and key terms from your X-Ray:
 ```
         ]],
     },
+    xray_incremental_prefix = [[
+**INCREMENTAL UPDATE MODE:** The reader already has X-Ray data up to {last_progress}% progress.
+Focus your analysis on NEW content from {last_progress}% to {progress}% only.
+
+For the narrative sections: only describe NEW characters, locations, themes, terms, and timeline events that appear in the new material. For existing characters who have significant developments in the new section, briefly note what changed.
+
+For the Re-immersion section: always provide this fresh, based on where the reader is NOW.
+
+**Previously known entities** (do not re-describe these unless they have significant new developments):
+{known_entities}
+
+]],
+    xray_dictionary_update = {
+        system_prompt =
+        "You are an expert literary assistant. Return ONLY a JSON code block with new or updated characters, locations, and terms. No narrative, no markdown prose.",
+        user_prompt = [[
+Analyze the book "{title}" by {author} from {last_progress}% to {progress}% progress.
+
+**Previously known entities:**
+{known_entities}
+
+Return ONLY new or significantly updated characters, locations, and terms as a JSON code block.
+- For NEW entities: include full description
+- For EXISTING entities with significant developments: include updated description
+- Do NOT include entities that have not changed
+- Include aliases for characters
+
+```json
+{
+  "characters": [
+    { "name": "Primary Name", "aliases": ["Alt Name"], "description": "Brief description", "relationships": "Key relationships" }
+  ],
+  "locations": [
+    { "name": "Place Name", "description": "Brief description and significance" }
+  ],
+  "terms": [
+    { "name": "Term", "description": "Concise definition or significance" }
+  ]
+}
+```
+
+Language: **{language}**.
+]],
+    },
     book_info = {
         system_prompt =
         "You are an expert literary assistant that provides accurate information about books. Always respond in Markdown format.",

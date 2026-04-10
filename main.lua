@@ -94,6 +94,14 @@ function Assistant:onDispatcherRegisterActions()
     general = true
   })
 
+  -- Register Dictionary Update action (lightweight X-Ray update)
+  Dispatcher:registerAction("ai_xray_dict_update", {
+    category = "none",
+    event = "AskAIXRayDictUpdate",
+    title = _("Update AI Dictionary"),
+    general = true
+  })
+
   -- Register Quick Notes action (available for gesture binding)
   Dispatcher:registerAction("ai_quick_note", {
     category = "none", 
@@ -174,6 +182,17 @@ function Assistant:addToMainMenu(menu_items)
                     hold_callback = function ()
                       UIManager:show(InfoMessage:new{
                         text = _("\"X-Ray\" summary for a book, structured into specific sections like Characters, Locations, Themes, Terms & Concepts, Timeline, and Re-immersion.")
+                      })
+                    end
+                  },
+                  {
+                    text = _("Update Dictionary"),
+                    callback = function ()
+                      self:onAskAIXRayDictUpdate()
+                    end,
+                    hold_callback = function ()
+                      UIManager:show(InfoMessage:new{
+                        text = _("Lightweight update: scans only new material since last X-Ray and adds new characters, locations, and terms to the dictionary. Much faster and cheaper than a full X-Ray.")
                       })
                     end
                   },
@@ -855,6 +874,18 @@ end
       local showFeatureDialog = require("assistant_featuredialog")
       Trapper:wrap(function()
         showFeatureDialog(self, "xray", book.title, book.authors, book.percent_finished)
+      end)
+    end)
+    return true
+  end
+
+  function Assistant:onAskAIXRayDictUpdate()
+    if not self:isConfigured() then return end
+    NetworkMgr:runWhenOnline(function()
+      local book = getDocumentInfo(self.ui.document)
+      local showFeatureDialog = require("assistant_featuredialog")
+      Trapper:wrap(function()
+        showFeatureDialog(self, "xray_dictionary_update", book.title, book.authors, book.percent_finished)
       end)
     end)
     return true
