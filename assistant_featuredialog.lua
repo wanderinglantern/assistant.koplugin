@@ -30,7 +30,7 @@ local function showFeatureDialog(assistant, feature_type, title, author, progres
     end
 
     local formatted_progress_percent = string.format("%.2f", progress_percent * 100)
-    local feature_title, loading_message, system_prompt, user_prompt_template, book_text, highlights_notes
+    local feature_title, loading_message, system_prompt, user_prompt_template, book_text, highlights_notes, feature_config
 
     local language = assistant.settings:readSetting("response_language") or assistant.ui_language
 
@@ -61,13 +61,15 @@ local function showFeatureDialog(assistant, feature_type, title, author, progres
                 title = _("Recap"),
                 loading_message = _("Loading Recap..."),
                 config_key = "recap_config",
-                prompts_key = "recap"
+                prompts_key = "recap",
+                thinking_budget = 8000,
             },
             xray = {
                 title = _("X‑Ray"),
                 loading_message = _("Loading X-Ray..."),
                 config_key = "xray_config",
-                prompts_key = "xray"
+                prompts_key = "xray",
+                thinking_budget = 10000,
             },
             book_info = {
                 title = _("Book Information"),
@@ -90,7 +92,7 @@ local function showFeatureDialog(assistant, feature_type, title, author, progres
         }
         
         -- Get feature configuration
-        local feature_config = feature_configurations[feature_type]
+        feature_config = feature_configurations[feature_type]
         if not feature_config then
             UIManager:show(InfoMessage:new{ 
                 icon = "notice-warning", 
@@ -134,7 +136,7 @@ local function showFeatureDialog(assistant, feature_type, title, author, progres
     end
     
     local book_text_prompt = ""
-    if book_text then
+    if book_text and #book_text <= 3000 then
         book_text_prompt = string.format("\n\n[! IMPORTANT !] Here is the book text up to my current position, only consider this text for your response:\n [BOOK TEXT BEGIN]\n%s\n[BOOK TEXT END]", book_text)
     end
 
@@ -182,7 +184,25 @@ local function showFeatureDialog(assistant, feature_type, title, author, progres
       table.insert(message_history, context)
     end
 
-    local answer, err = Querier:query(message_history, loading_message)
+    -- Build query_options for Claude-specific features
+    local query_options = {}
+
+    -- Extended thinking (from feature config or custom config)
+    local thinking_budget = (type(feature_type) == "table" and feature_type.thinking_budget)
+        or (feature_config and feature_config.thinking_budget)
+        or 0
+    if thinking_budget >= 1024 then
+        query_options.thinking_budget = thinking_budget
+    end
+
+    -- Prompt caching: move book text from user message to cached system block
+    if book_text and #book_text > 3000 then
+        query_options.cache_book_text = true
+        query_options.book_text = string.format(
+            "[BOOK TEXT BEGIN]\n%s\n[BOOK TEXT END]", book_text)
+    end
+
+    local answer, err = Querier:query(message_history, loading_message, query_options)
     if err then
       assistant.querier:showError(err)
       return
@@ -217,7 +237,7 @@ local function showFeatureDialog(assistant, feature_type, title, author, progres
         viewer:trimMessageHistory()
         NetworkMgr:runWhenOnline(function()
           Trapper:wrap(function()
-            local answer, err = Querier:query(message_history)
+            local answer, err = Querier:query(message_history, nil, query_options)
             
             if err then
               Querier:showError(err)

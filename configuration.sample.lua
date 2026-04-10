@@ -13,6 +13,22 @@ local CONFIGURATION = {
         },
     },
 
+    -- Claude-specific feature flags
+    -- These control Anthropic API features that improve quality and reduce cost.
+    claude = {
+        -- Extended thinking token budgets per feature (minimum 1024, set to 0 to disable).
+        -- Thinking improves quality for complex analysis at the cost of latency.
+        thinking_budget = {
+            xray      = 10000,  -- X-Ray: complex multi-section narrative analysis
+            recap     = 8000,   -- Recap: recent plot summary
+            term_xray = 5000,   -- Term X-Ray: context-aware term analysis
+            default   = 0,      -- All other features: no thinking
+        },
+        -- Prompt caching: cache book text in system prompt for session reuse.
+        -- Second+ queries in a session cost ~10% of the original input token price.
+        prompt_caching = true,
+    },
+
     -- Optional features
     features = {
         hide_highlighted_text = false,         -- Set to true to hide the highlighted text at the top
