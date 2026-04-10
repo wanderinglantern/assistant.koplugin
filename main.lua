@@ -283,7 +283,7 @@ function Assistant:addToMainMenu(menu_items)
               },
               {
                 text_func = function ()
-                  return T(_("AI Model: %1"), FrontendUtil.tableGetValue(CONFIGURATION, "provider_settings", "anthropic", "model") or _("Not configured"))
+                  return T(_("AI Model: %1"), self.settings:readSetting("selected_model") or FrontendUtil.tableGetValue(CONFIGURATION, "provider_settings", "anthropic", "model") or _("Not configured"))
                 end,
                 keep_menu_open = true,
                 callback = function (touchmenu_instance)
@@ -377,7 +377,7 @@ function Assistant:addToMainMenu(menu_items)
                 },
                 {
                     text_func = function ()
-                      return T(_("AI Model: %1"), FrontendUtil.tableGetValue(CONFIGURATION, "provider_settings", "anthropic", "model") or _("Not configured"))
+                      return T(_("AI Model: %1"), self.settings:readSetting("selected_model") or FrontendUtil.tableGetValue(CONFIGURATION, "provider_settings", "anthropic", "model") or _("Not configured"))
                     end,
                     keep_menu_open = true,
                     callback = function (touchmenu_instance)
