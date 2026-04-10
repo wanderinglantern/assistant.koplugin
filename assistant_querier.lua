@@ -427,6 +427,7 @@ function Querier:processStream(bgQuery, trunk_callback)
                         local ok, event = pcall(rapidjson.decode, json_str, {null = nil})
                         if ok and event then
                             local event_type = event.type
+                            logger.dbg("SSE event type:", event_type)
 
                             if event_type == "content_block_start" then
                                 local block_type = koutil.tableGetValue(event, "content_block", "type")
@@ -559,6 +560,9 @@ function Querier:processStream(bgQuery, trunk_callback)
     UIManager:scheduleIn(collect_interval_sec, collect_and_clean)
 
     local ret = koutil.trim(table.concat(result_buffer))
+    logger.info("processStream completed: result_buffer entries:", #result_buffer,
+        "non200:", non200, "user_interrupted:", self.user_interrupted,
+        "ret length:", #ret, "ret preview:", ret:sub(1, 100))
     if non200 then
         -- try to parse the json, returns only message from the API.
         if ret:sub(1, 1) == '{' then
