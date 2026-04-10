@@ -2,7 +2,7 @@ local CONFIGURATION = {
     -- Anthropic Claude API settings
     provider_settings = {
         anthropic = {
-            model = "claude-sonnet-4-20250514",
+            model = "claude-sonnet-4-6",
             base_url = "https://api.anthropic.com/v1/messages",
             api_key = "your-anthropic-api-key",
             additional_parameters = {

@@ -114,14 +114,13 @@ function AnthropicHandler:query(message_history, anthropic_settings, query_optio
         })
     end
 
-    -- Extended thinking
-    local thinking_budget = query_options and query_options.thinking_budget
-    if thinking_budget and thinking_budget >= 1024 then
+    -- Extended thinking (adaptive mode for Claude 4.6+ models)
+    local use_thinking = query_options and query_options.thinking_budget
+        and query_options.thinking_budget >= 1024
+    if use_thinking then
         requestBodyTable.thinking = {
-            type = "enabled",
-            budget_tokens = thinking_budget,
+            type = "adaptive",
         }
-        requestBodyTable.temperature = 1
     end
 
     local requestBody = json.encode(requestBodyTable)
@@ -130,9 +129,6 @@ function AnthropicHandler:query(message_history, anthropic_settings, query_optio
         ["x-api-key"] = anthropic_settings.api_key,
         ["anthropic-version"] = koutil.tableGetValue(anthropic_settings, "additional_parameters", "anthropic_version")
     }
-    if thinking_budget and thinking_budget >= 1024 then
-        headers["anthropic-beta"] = "interleaved-thinking-2025-05-14"
-    end
     if query_options.citations_book_text then
         -- Combine beta headers if both thinking and citations are active
         local existing_beta = headers["anthropic-beta"]
