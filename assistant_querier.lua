@@ -54,6 +54,12 @@ function Querier:load_model(provider_name)
         return false, err
     end
 
+    -- Override model with user's selection from settings (dynamic model picker)
+    local selected_model = self.settings and self.settings:readSetting("selected_model")
+    if selected_model and selected_model ~= "" then
+        provider_settings.model = selected_model
+    end
+
     local success, handler = pcall(function()
         return require("api_handlers.anthropic")
     end)

@@ -207,8 +207,8 @@ function SettingsDialog:init()
     self.title_bar:init()
     self.element_width = math.floor(self.width * 0.9)
 
-    -- Model info display (read-only, replaces provider radio buttons)
-    local model_name = FrontendUtil.tableGetValue(self.CONFIGURATION, "provider_settings", "anthropic", "model") or _("Not configured")
+    -- Model info display (shows user-selected or config model)
+    local model_name = getActiveModel(self.assistant)
     local model_desc = TextBoxWidget:new{
         width = self.element_width,
         text = T(_("Model: %1"), model_name),
@@ -268,11 +268,114 @@ function SettingsDialog:onCloseWidget()
     self.assistant._settings_dialog = nil
 end
 
+-- Get the active model: user selection > config file > fallback
+local function getActiveModel(assistant)
+    return assistant.settings:readSetting("selected_model")
+        or FrontendUtil.tableGetValue(assistant.CONFIGURATION, "provider_settings", "anthropic", "model")
+        or "claude-sonnet-4-6"
+end
+
+SettingsDialog.getActiveModel = getActiveModel
+
 SettingsDialog.genMenuSettings = function (assistant)
     local sub_item_table = {
         {
             text_func = function ()
-                return _("AI Language: ") .. 
+                return T(_("AI Model: %1"), getActiveModel(assistant))
+            end,
+            callback = function (touchmenu_instance)
+                local NetworkMgr = require("ui/network/manager")
+                NetworkMgr:runWhenOnline(function()
+                    local Trapper = require("ui/trapper")
+                    Trapper:wrap(function()
+                        local AnthropicHandler = require("api_handlers.anthropic")
+                        local api_key = FrontendUtil.tableGetValue(
+                            assistant.CONFIGURATION, "provider_settings", "anthropic", "api_key")
+                        local anthropic_version = FrontendUtil.tableGetValue(
+                            assistant.CONFIGURATION, "provider_settings", "anthropic",
+                            "additional_parameters", "anthropic_version")
+
+                        local loading = InfoMessage:new{
+                            text = _("Fetching available models..."),
+                        }
+                        UIManager:show(loading)
+                        UIManager:forceRePaint()
+
+                        local models, err = AnthropicHandler:fetchModels(api_key, anthropic_version)
+                        UIManager:close(loading)
+
+                        if not models or err then
+                            UIManager:show(InfoMessage:new{
+                                icon = "notice-warning",
+                                text = T(_("Failed to fetch models:\n%1"), err or _("Unknown error")),
+                            })
+                            return
+                        end
+
+                        if #models == 0 then
+                            UIManager:show(InfoMessage:new{
+                                text = _("No models available."),
+                            })
+                            return
+                        end
+
+                        -- Build menu items for model selection
+                        local current_model = getActiveModel(assistant)
+                        local menu_items = {}
+                        for _, model in ipairs(models) do
+                            table.insert(menu_items, {
+                                text = model.display_name .. "  (" .. model.id .. ")",
+                                checked_func = function()
+                                    return getActiveModel(assistant) == model.id
+                                end,
+                                callback = function()
+                                    assistant.settings:saveSetting("selected_model", model.id)
+                                    assistant.settings:flush()
+                                    assistant.updated = true
+                                    -- Reload the querier with the new model
+                                    assistant.querier.provider_name = nil
+                                    assistant.querier.handler = nil
+                                    assistant.querier:load_model("anthropic")
+                                    if touchmenu_instance then
+                                        touchmenu_instance:updateItems()
+                                    end
+                                    UIManager:show(InfoMessage:new{
+                                        text = T(_("Model changed to: %1"), model.display_name),
+                                        timeout = 2,
+                                    })
+                                end,
+                            })
+                        end
+
+                        local ButtonDialog = require("ui/widget/buttondialog")
+                        local Menu = require("ui/widget/menu")
+                        local model_menu = Menu:new{
+                            title = _("Select AI Model"),
+                            item_table = menu_items,
+                            width = Screen:getWidth() - Size.margin.default * 2,
+                            height = Screen:getHeight() - Size.margin.default * 2,
+                            items_per_page = 14,
+                            is_borderless = false,
+                            is_popout = false,
+                            onMenuChoice = function(self_menu, item)
+                                if item.callback then item.callback() end
+                                UIManager:close(self_menu)
+                            end,
+                            close_callback = function()
+                                if touchmenu_instance then
+                                    touchmenu_instance:updateItems()
+                                end
+                            end,
+                        }
+                        UIManager:show(model_menu)
+                    end)
+                end)
+            end,
+            keep_menu_open = true,
+        },
+        {
+            text_func = function ()
+                return _("AI Language: ") ..
                     (assistant.settings:readSetting("response_language") or assistant.ui_language)
             end,
             callback = function (touchmenu_instance)

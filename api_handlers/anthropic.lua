@@ -2,6 +2,11 @@ local BaseHandler = require("api_handlers.base")
 local json = require("json")
 local koutil = require("util")
 local logger = require("logger")
+local http = require("socket.http")
+local ltn12 = require("ltn12")
+local https = require("ssl.https")
+local socketutil = require("socketutil")
+local socket = require("socket")
 
 local AnthropicHandler = BaseHandler:new()
 
@@ -173,6 +178,64 @@ function AnthropicHandler:query(message_history, anthropic_settings, query_optio
     else
         return nil, "Error: Unexpected response format from API"
     end
+end
+
+--- Fetch available models from the Anthropic API
+--- @param api_key string
+--- @param anthropic_version string|nil
+--- @return table|nil models, string|nil error
+function AnthropicHandler:fetchModels(api_key, anthropic_version)
+    if not api_key or api_key == "" then
+        return nil, "API key is required"
+    end
+
+    local url = "https://api.anthropic.com/v1/models"
+    https.cert_verify = false
+
+    local sink = {}
+    socketutil:set_timeout(15, 30)
+    local request = {
+        url = url,
+        method = "GET",
+        headers = {
+            ["x-api-key"] = api_key,
+            ["anthropic-version"] = anthropic_version or "2023-06-01",
+        },
+        sink = ltn12.sink.table(sink),
+    }
+    local code, resp_headers, status = socket.skip(1, http.request(request))
+    socketutil:reset_timeout()
+
+    if not resp_headers then
+        return nil, "Network error: " .. tostring(status or code or "unreachable")
+    end
+
+    local content = table.concat(sink)
+    if code ~= 200 then
+        return nil, "API error: " .. tostring(code) .. " " .. tostring(status)
+    end
+
+    local ok, parsed = pcall(json.decode, content)
+    if not ok or type(parsed) ~= "table" then
+        return nil, "Failed to parse models response"
+    end
+
+    local models = {}
+    for _, model in ipairs(parsed.data or {}) do
+        if type(model) == "table" and model.id then
+            table.insert(models, {
+                id = model.id,
+                display_name = model.display_name or model.id,
+            })
+        end
+    end
+
+    -- Sort by display name
+    table.sort(models, function(a, b)
+        return (a.display_name or "") < (b.display_name or "")
+    end)
+
+    return models
 end
 
 return AnthropicHandler
