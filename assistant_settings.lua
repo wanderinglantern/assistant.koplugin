@@ -15,7 +15,6 @@ local Font = require("ui/font")
 local InputDialog = require("ui/widget/inputdialog")
 local LineWidget = require("ui/widget/linewidget")
 local MovableContainer = require("ui/widget/container/movablecontainer")
-local RadioButtonTable = require("ui/widget/radiobuttontable")
 local ButtonTable = require("ui/widget/buttontable")
 local TextBoxWidget = require("ui/widget/textboxwidget")
 local SpinWidget = require("ui/widget/spinwidget")
@@ -28,7 +27,6 @@ local ConfirmBox = require("ui/widget/confirmbox")
 local _ = require("assistant_gettext")
 local T = require("ffi/util").template
 local Screen = require("device").screen
-local ffiutil = require("ffi/util")
 local meta = require("_meta")
 local logger = require("logger")
 
@@ -172,7 +170,7 @@ local function LanguageSetting(assistant, close_callback)
 end
 
 local SettingsDialog = InputDialog:extend{
-    title = _("AI Provider Settings"),
+    title = _("AI Assistant Settings"),
 
     -- inited variables
     assistant = nil, -- reference to the main assistant object
@@ -181,7 +179,6 @@ local SettingsDialog = InputDialog:extend{
 
     -- widgets
     buttons = nil,
-    radio_buttons = nil,
 }
 
 function SettingsDialog:init()
@@ -203,39 +200,6 @@ function SettingsDialog:init()
         }
     }}  
 
-    -- init radio buttons for selecting AI Model provider
-    self.radio_buttons = {} -- init radio buttons table
-
-    local MAX_FOR_SINGLE_COLUMN = 12
-    -- 2 columns if more than MAX_FOR_SINGLE_COLUMN providers, otherwise 1 column
-    local columns = FrontendUtil.tableSize(self.CONFIGURATION.provider_settings) > MAX_FOR_SINGLE_COLUMN and 2 or 1
-    local buttonrow = {}
-    for key, tab in ffiutil.orderedPairs(self.CONFIGURATION.provider_settings) do
-        if not (FrontendUtil.tableGetValue(tab, "visible") == false) then -- skip `visible = false` providers
-            if #buttonrow < columns then
-                local model_name = FrontendUtil.tableGetValue(tab, "model") or FrontendUtil.tableGetValue(tab, "deployment_name") 
-                local button_text = key
-                if columns == 1 and model_name and model_name ~= "" then
-                    button_text = string.format("%s (%s)", key, model_name)
-                end
-                table.insert(buttonrow, {
-                    text = button_text,
-                    provider = key, -- note: this `provider` field belongs to the RadioButton, not our AI Model provider.
-                    checked = (key == self.assistant.querier.provider_name),
-                })
-            end
-            if #buttonrow == columns then
-                table.insert(self.radio_buttons, buttonrow)
-                buttonrow = {}
-            end
-        end
-    end
-
-    if #buttonrow > 0 then -- edge case: if there are remaining buttons in the last row
-        table.insert(self.radio_buttons, buttonrow)
-        buttonrow = {}
-    end
-
     -- init title and buttons in base class
     InputDialog.init(self)
     --  adds a close button to the top right
@@ -243,51 +207,29 @@ function SettingsDialog:init()
     self.title_bar:init()
     self.element_width = math.floor(self.width * 0.9)
 
-    self.radio_button_table = RadioButtonTable:new{
-        radio_buttons = self.radio_buttons,
+    -- Model info display (read-only, replaces provider radio buttons)
+    local model_name = FrontendUtil.tableGetValue(self.CONFIGURATION, "provider_settings", "anthropic", "model") or _("Not configured")
+    local model_desc = TextBoxWidget:new{
         width = self.element_width,
+        text = T(_("Model: %1"), model_name),
         face = Font:getFace("cfont", 18),
-        sep_width = 0,
-        focused = true,
-        scroll = false,
-        parent = self,
-        button_select_callback = function(btn)
-            self.settings:saveSetting("provider", btn.provider)
-            self.assistant.updated = true
-            self.assistant.querier:load_model(btn.provider)
-        end
-    }
-    self.layout = {self.layout[#self.layout]} -- keep bottom buttons
-    self:mergeLayoutInVertical(self.radio_button_table, #self.layout) -- before bottom buttons
-
-    local radio_desc = TextBoxWidget:new{
-        width = self.width - 2 * Size.padding.large,
-        text = _("AI Model provider:"),
-        face = Font:getFace("xx_smallinfofont"),
     }
 
     -- main dialog widget layout table
     self.vgroup = VerticalGroup:new{
         align = "left",
-        self.title_bar,         -- -- Title Bar
-        CenterContainer:new{    -- -- Description text for provider radio
+        self.title_bar,
+        CenterContainer:new{
             dimen = Geom:new{
                 w = self.width,
-                h = radio_desc:getLineHeight() + Size.padding.tiny
+                h = model_desc:getSize().h + Size.padding.default * 2
             },
             HorizontalGroup:new{
-                HorizontalSpan:new{ width = Size.padding.tiny },
-                radio_desc,
+                HorizontalSpan:new{ width = Size.padding.default },
+                model_desc,
             },
         },
-        CenterContainer:new{    -- -- Provider radio buttons
-            dimen = Geom:new{
-                w = self.width,
-                h = self.radio_button_table:getSize().h,
-            },
-            self.radio_button_table,
-        },
-        CenterContainer:new{    -- -- Button at the bottom
+        CenterContainer:new{
             dimen = Geom:new{
                 w = self.title_bar:getSize().w,
                 h = self.button_table:getSize().h,
@@ -295,6 +237,7 @@ function SettingsDialog:init()
             self.button_table,
         }
     }
+    self.layout = {self.layout[#self.layout]}
 
     self.dialog_frame = FrameContainer:new{
         radius = Size.radius.window,

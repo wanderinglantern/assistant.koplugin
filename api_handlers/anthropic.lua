@@ -5,34 +5,48 @@ local logger = require("logger")
 
 local AnthropicHandler = BaseHandler:new()
 
-local function prepare_anthropic_messages(message_history)
+local function prepare_anthropic_messages(message_history, options)
+    -- options = { cache_book_text = bool, book_text = string, book_title = string }
+    options = options or {}
     local anthropic_messages = {}
-    local system_content = ""
-    
-    -- Extract and concatenate all system prompts
-    for i, msg in ipairs(message_history) do
-        if msg.role == "system" then
-            system_content = system_content .. msg.content .. "\n\n"
-        end
-    end
+    local system_blocks = {}
 
-    -- Remove trailing newlines
-    system_content = system_content:gsub("\n\n$", "")
-    
-    -- Process non-system messages (user and assistant)
-    for i, msg in ipairs(message_history) do
-        if msg.role ~= "system" then
-            table.insert(anthropic_messages, {
-                role = msg.role,
-                content = msg.content
+    -- Collect all system messages as individual text blocks
+    for _, msg in ipairs(message_history) do
+        if msg.role == "system" then
+            table.insert(system_blocks, {
+                type = "text",
+                text = msg.content,
             })
         end
     end
-    
-    -- Return structured data for Anthropic API
+
+    -- Optionally append book text as a separate cacheable block
+    if options.cache_book_text and type(options.book_text) == "string" then
+        table.insert(system_blocks, {
+            type = "text",
+            text = options.book_text,
+            cache_control = { type = "ephemeral" },
+        })
+    end
+
+    -- Process non-system messages (user and assistant)
+    for _, msg in ipairs(message_history) do
+        if msg.role ~= "system" then
+            table.insert(anthropic_messages, {
+                role = msg.role,
+                content = msg.content,
+            })
+        end
+    end
+
     return {
         messages = anthropic_messages,
-        system = system_content
+        -- If only one text block with no cache_control, fall back to plain string
+        -- for backward compat with basic calls
+        system = (#system_blocks == 1 and not system_blocks[1].cache_control)
+                 and system_blocks[1].text
+                 or system_blocks,
     }
 end
 
@@ -54,9 +68,9 @@ local function extract_text_from_content(content_blocks)
 end
 
 
-function AnthropicHandler:query(message_history, anthropic_settings)
-    
-    local requestBodyTable = prepare_anthropic_messages(message_history)
+function AnthropicHandler:query(message_history, anthropic_settings, query_options)
+    query_options = query_options or {}
+    local requestBodyTable = prepare_anthropic_messages(message_history, query_options)
     requestBodyTable.model = anthropic_settings.model
     requestBodyTable.max_tokens = koutil.tableGetValue(anthropic_settings, "additional_parameters", "max_tokens")
     requestBodyTable.stream = koutil.tableGetValue(anthropic_settings, "additional_parameters", "stream") or false
