@@ -191,7 +191,7 @@ function Querier:query(message_history, title, query_options)
     if not query_options.no_stream then
         self.handler:setTrapWidget(infomsg)
     end
-    local res, err = self.handler:query(trimMessageHistory(message_history), self.provider_settings, query_options)
+    local res, err, token_usage = self.handler:query(trimMessageHistory(message_history), self.provider_settings, query_options)
     self.handler:resetTrapWidget()
 
     -- Stop animation
@@ -282,7 +282,7 @@ function Querier:query(message_history, title, query_options)
 
         local stream_mode_auto_scroll = self.settings:readSetting("stream_mode_auto_scroll", true)
         local original_title = streamDialog.title_bar.title
-        local ok, content, err = pcall(self.processStream, self, res, function (content, buffer, signal)
+        local ok, content, err, stream_token_usage = pcall(self.processStream, self, res, function (content, buffer, signal)
             UIManager:nextTick(function ()
                 -- Handle stream status signals
                 if signal == "thinking_start" then
@@ -341,6 +341,7 @@ function Querier:query(message_history, title, query_options)
         end
 
         res = content
+        token_usage = stream_token_usage
     end
 
     if err == self.handler.CODE_CANCELLED then
@@ -353,7 +354,18 @@ function Querier:query(message_history, title, query_options)
     elseif #res == 0 then
         return nil, _("No response received.") .. (err and tostring(err) or "")
     end
-    return res
+
+    -- Accumulate session token usage
+    if token_usage then
+        self.last_token_usage = token_usage
+        self.session_usage = self.session_usage or { input = 0, output = 0, cache_read = 0, cache_write = 0 }
+        self.session_usage.input = self.session_usage.input + (token_usage.input or 0)
+        self.session_usage.output = self.session_usage.output + (token_usage.output or 0)
+        self.session_usage.cache_read = self.session_usage.cache_read + (token_usage.cache_read or 0)
+        self.session_usage.cache_write = self.session_usage.cache_write + (token_usage.cache_write or 0)
+    end
+
+    return res, nil, token_usage
 end
 
 --- func description: run the stream request in the background 
@@ -384,6 +396,9 @@ function Querier:processStream(bgQuery, trunk_callback)
     local is_in_thinking_block = false
     local is_in_tool_block = false
     local output_tokens = 0
+    local input_tokens = 0
+    local cache_read_tokens = 0
+    local cache_write_tokens = 0
 
     while true do  
 
@@ -477,6 +492,14 @@ function Querier:processStream(bgQuery, trunk_callback)
                                     output_tokens = koutil.tableGetValue(usage, "output_tokens") or 0
                                 end
 
+                            elseif event_type == "message_start" then
+                                local usage = koutil.tableGetValue(event, "message", "usage")
+                                if usage then
+                                    input_tokens = usage.input_tokens or 0
+                                    cache_read_tokens = usage.cache_read_input_tokens or 0
+                                    cache_write_tokens = usage.cache_creation_input_tokens or 0
+                                end
+
                             elseif event_type == "message_stop" then
                                 completed = true
 
@@ -566,6 +589,11 @@ function Querier:processStream(bgQuery, trunk_callback)
     end
     UIManager:scheduleIn(collect_interval_sec, collect_and_clean)
 
+    local token_usage = {
+        input = input_tokens, output = output_tokens,
+        cache_read = cache_read_tokens, cache_write = cache_write_tokens,
+    }
+
     local ret = koutil.trim(table.concat(result_buffer))
     if non200 then
         -- try to parse the json, returns only message from the API.
@@ -583,7 +611,7 @@ function Querier:processStream(bgQuery, trunk_callback)
         -- return all received content as error message
         return nil, ret
     end
-    return ret, nil
+    return ret, nil, token_usage
 end
 
 return Querier

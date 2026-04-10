@@ -407,6 +407,27 @@ SettingsDialog.genMenuSettings = function (assistant)
             keep_menu_open = true,
         },
         {
+            text_func = function ()
+                return T(_("Conversation Depth: %1 rounds"), assistant.settings:readSetting("max_conversation_rounds") or 3)
+            end,
+            callback = function (touchmenu_instance)
+                local widget = SpinWidget:new{
+                    title_text = _("Max Conversation Rounds"),
+                    info_text = _("Number of question-answer rounds kept in context. Lower values reduce token usage."),
+                    value = assistant.settings:readSetting("max_conversation_rounds") or 3,
+                    value_min = 1, value_max = 8, default_value = 3,
+                    callback = function(spin)
+                        assistant.settings:saveSetting("max_conversation_rounds", spin.value)
+                    end,
+                    close_callback = function ()
+                        touchmenu_instance:updateItems()
+                    end
+                }
+                UIManager:show(widget)
+            end,
+            keep_menu_open = true,
+        },
+        {
             text = _("Stream Mode Settings"),
             sub_item_table = {
                 {

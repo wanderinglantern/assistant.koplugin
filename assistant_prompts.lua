@@ -160,6 +160,7 @@ Most importantly, **Respond in this language:** {language}
     grammar = {
         text = _("Grammar"),
         order = 20,
+        max_tokens = 2048,
         desc = _(
             "This prompt analyzes the grammar of the highlighted text, providing a detailed explanation of its structure and any grammatical errors."),
         system_prompt =
@@ -178,6 +179,7 @@ Please provide a detailed and comprehensive explanation of the grammar of the fo
     translate = {
         order = 30,
         text = _("Translate"),
+        max_tokens = 2048,
         desc = _("This prompt translates the highlighted text to another language."),
         user_prompt = [[You are a skilled translator tasked with translating text from one language to another.
 Your goal is to provide an accurate and natural-sounding translation that preserves the meaning, tone, and style of the original text.
@@ -201,6 +203,7 @@ Follow these steps to complete the translation:
     summarize = {
         text = _("Summarize"),
         order = 40,
+        max_tokens = 2048,
         desc = _("This prompt summarizes the highlighted text, capturing its main points and essential details."),
         user_prompt = [[
 You are an exceptionally skilled summarization expert and a master of linguistic precision.
@@ -212,6 +215,7 @@ Please provide a concise and clear summary of the following text in its own lang
     simplify = {
         text = _("Simplify"),
         order = 50,
+        max_tokens = 2048,
         desc = _("This prompt simplifies the highlighted text to make it easier to understand."),
         user_prompt =
         [[You are an experienced linguistic expert and an effective communicator, skilled at transforming complex content into clear, easily understandable expressions.
@@ -256,6 +260,7 @@ Provide a concise, simple, and crystal-clear ELI5 explanation of the following, 
     explain = {
         text = _("Explain"),
         order = 80,
+        max_tokens = 2048,
         desc = _("This prompt explains the highlighted text in detail, ensuring clarity and understanding."),
         user_prompt = [[You are an expert Explainer and a highly skilled Cross-Cultural Communicator.
 Your task is to accurately and comprehensively explain any given text.

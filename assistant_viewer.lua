@@ -365,10 +365,32 @@ function ChatGPTViewer:init()
       end
   }
   
-  -- Insert the buttons into the existing buttons, 
+  -- Insert the buttons into the existing buttons,
   -- to keep close button on the right, insert into the second-to-last position
   table.insert(buttons[#buttons], #(buttons[#buttons]), copy_button)
-  
+
+  -- Add token usage button if usage data is available
+  if self.token_usage then
+      local token_button = {
+          text = _("Tokens"),
+          callback = function()
+              local u = self.token_usage
+              local s = self.assistant and self.assistant.querier and self.assistant.querier.session_usage
+              local lines = {}
+              table.insert(lines, T(_("Input: %1  Output: %2"), u.input or 0, u.output or 0))
+              if (u.cache_read or 0) > 0 or (u.cache_write or 0) > 0 then
+                  table.insert(lines, T(_("Cache read: %1  write: %2"), u.cache_read or 0, u.cache_write or 0))
+              end
+              if s then
+                  table.insert(lines, "")
+                  table.insert(lines, T(_("Session: in %1 / out %2"), s.input or 0, s.output or 0))
+              end
+              UIManager:show(InfoMessage:new{ text = table.concat(lines, "\n") })
+          end,
+      }
+      table.insert(buttons[#buttons], #(buttons[#buttons]), token_button)
+  end
+
   -- Add a button to add notes
   local function createAddNoteButton(self)
       return {
@@ -918,8 +940,9 @@ end
 function ChatGPTViewer:trimMessageHistory()
   if not self.message_history then return end
 
-  -- TODO: Make this configurable in the settings dialog
-  local MAX_ROUNDS = 3
+  local MAX_ROUNDS = (self.assistant
+      and self.assistant.settings:readSetting("max_conversation_rounds"))
+      or 3
 
   local assistant_msg_indices = {}
   -- Preserve the first round: System prompt (1), User1 (2), Assistant1 (3)

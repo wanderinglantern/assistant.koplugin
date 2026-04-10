@@ -133,6 +133,7 @@ local function showFeatureDialog(assistant, feature_type, title, author, progres
                 config_key = "recap_config",
                 prompts_key = "recap",
                 thinking_budget = 8000,
+                max_tokens = 4096,
             },
             xray = {
                 title = _("X‑Ray"),
@@ -140,6 +141,7 @@ local function showFeatureDialog(assistant, feature_type, title, author, progres
                 config_key = "xray_config",
                 prompts_key = "xray",
                 thinking_budget = 10000,
+                max_tokens = 16384,
             },
             xray_dictionary_update = {
                 title = _("Update Dictionary"),
@@ -147,6 +149,7 @@ local function showFeatureDialog(assistant, feature_type, title, author, progres
                 config_key = "xray_config",
                 prompts_key = "xray_dictionary_update",
                 thinking_budget = 5000,
+                max_tokens = 4096,
             },
             book_info = {
                 title = _("Book Information"),
@@ -154,18 +157,21 @@ local function showFeatureDialog(assistant, feature_type, title, author, progres
                 config_key = "book_info_config",
                 prompts_key = "book_info",
                 web_search = true,
+                max_tokens = 4096,
             },
             annotations = {
                 title = _("Highlight & Note Analysis"),
                 loading_message = _("Loading Highlight & Note Analysis..."),
                 config_key = "annotations_config",
-                prompts_key = "annotations"
+                prompts_key = "annotations",
+                max_tokens = 4096,
             },
             summary_using_annotations = {
                 title = _("Summary Using Highlights & Notes"),
                 loading_message = _("Loading Summary Using Highlights & Notes..."),
                 config_key = "summary_using_annotations_config",
-                prompts_key = "summary_using_annotations"
+                prompts_key = "summary_using_annotations",
+                max_tokens = 4096,
             }
         }
         
@@ -230,6 +236,28 @@ local function showFeatureDialog(assistant, feature_type, title, author, progres
         },
     }
     
+    -- For dictionary updates, trim book text to only the new portion since last update.
+    -- The full text covers 0% → current progress; we only need last_progress% → current.
+    if feature_type == "xray_dictionary_update" and book_text and #book_text > 0 then
+        local props = ui.document and ui.document.getProps and ui.document:getProps() or {}
+        local book_hash = props.md5
+            or (ui.document and ui.document.file and tostring(ui.document.file):gsub("[^%w]", "_"))
+        if book_hash then
+            local xray_data = assistant.settings:readSetting("xray_dictionary") or {}
+            local book_dict = xray_data[book_hash]
+            if book_dict and book_dict.last_progress then
+                local last_pct = tonumber(book_dict.last_progress) or 0
+                local curr_pct = tonumber(formatted_progress_percent) or 0
+                if last_pct > 0 and curr_pct > last_pct then
+                    -- Approximate: keep only the tail fraction of text representing new pages
+                    local new_fraction = (curr_pct - last_pct) / curr_pct
+                    local start_pos = math.max(1, math.floor(#book_text * (1 - new_fraction)) - 500) -- 500 char overlap for context
+                    book_text = book_text:sub(start_pos)
+                end
+            end
+        end
+    end
+
     -- Check for existing X-Ray dictionary data for incremental mode
     local last_progress_str = "0"
     local known_entities_str = ""
@@ -331,11 +359,19 @@ local function showFeatureDialog(assistant, feature_type, title, author, progres
         query_options.thinking_budget = thinking_budget
     end
 
-    -- Prompt caching: move book text from user message to cached system block
+    -- Prompt caching: cache system prompt and move large book text to cached system block
+    query_options.cache_system_prompt = true
     if book_text and #book_text > 3000 then
         query_options.cache_book_text = true
         query_options.book_text = string.format(
             "[BOOK TEXT BEGIN]\n%s\n[BOOK TEXT END]", book_text)
+    end
+
+    -- Per-feature max_tokens (from feature config or custom config)
+    local max_tokens = (type(feature_type) == "table" and feature_type.max_tokens)
+        or (feature_config and feature_config.max_tokens)
+    if max_tokens then
+        query_options.max_tokens = max_tokens
     end
 
     -- Web search (from feature config)
@@ -345,7 +381,7 @@ local function showFeatureDialog(assistant, feature_type, title, author, progres
         query_options.web_search = true
     end
 
-    local answer, err = Querier:query(message_history, loading_message, query_options)
+    local answer, err, token_usage = Querier:query(message_history, loading_message, query_options)
     if err then
       assistant.querier:showError(err)
       return
@@ -382,6 +418,7 @@ local function showFeatureDialog(assistant, feature_type, title, author, progres
       ui = ui,
       title = feature_title,
       text = createResultText(answer),
+      token_usage = token_usage,
       disable_add_note = true,
       message_history = message_history,
       onAskQuestion = function(viewer, user_question)
@@ -400,17 +437,18 @@ local function showFeatureDialog(assistant, feature_type, title, author, progres
         viewer:trimMessageHistory()
         NetworkMgr:runWhenOnline(function()
           Trapper:wrap(function()
-            local answer, err = Querier:query(message_history, nil, query_options)
-            
-            if err then
-              Querier:showError(err)
+            local answer, followup_err, followup_token_usage = Querier:query(message_history, nil, query_options)
+
+            if followup_err then
+              Querier:showError(followup_err)
               return
             end
-            
+
             table.insert(message_history, {
               role = "assistant",
               content = answer
             })
+            viewer.token_usage = followup_token_usage
             local normalized_answer = normalizeMarkdownHeadings(answer, 3, 6) or answer
             local additional_text = "\n\n### ⮞ User: \n" .. (type(user_question) == "string" and user_question or (user_question.text or user_question)) .. "\n\n### ⮞ Assistant:\n" .. normalized_answer
             viewer:update(viewer.text .. additional_text)

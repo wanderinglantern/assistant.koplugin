@@ -11,7 +11,8 @@ local socket = require("socket")
 local AnthropicHandler = BaseHandler:new()
 
 local function prepare_anthropic_messages(message_history, options)
-    -- options = { cache_book_text = bool, book_text = string, book_title = string }
+    -- options = { cache_book_text = bool, book_text = string, book_title = string,
+    --             cache_system_prompt = bool }
     options = options or {}
     local anthropic_messages = {}
     local system_blocks = {}
@@ -33,6 +34,17 @@ local function prepare_anthropic_messages(message_history, options)
             text = options.book_text,
             cache_control = { type = "ephemeral" },
         })
+    end
+
+    -- Cache the system prompt for session reuse (Anthropic matches by prefix,
+    -- so marking the last non-cached block ensures the full sequence is cached)
+    if options.cache_system_prompt and #system_blocks > 0 then
+        for i = #system_blocks, 1, -1 do
+            if not system_blocks[i].cache_control then
+                system_blocks[i].cache_control = { type = "ephemeral" }
+                break
+            end
+        end
     end
 
     -- Process non-system messages (user and assistant)
@@ -102,7 +114,8 @@ function AnthropicHandler:query(message_history, anthropic_settings, query_optio
     query_options = query_options or {}
     local requestBodyTable = prepare_anthropic_messages(message_history, query_options)
     requestBodyTable.model = anthropic_settings.model
-    requestBodyTable.max_tokens = koutil.tableGetValue(anthropic_settings, "additional_parameters", "max_tokens")
+    requestBodyTable.max_tokens = query_options.max_tokens
+        or koutil.tableGetValue(anthropic_settings, "additional_parameters", "max_tokens")
     requestBodyTable.stream = koutil.tableGetValue(anthropic_settings, "additional_parameters", "stream") or false
     local tools = koutil.tableGetValue(anthropic_settings, "additional_parameters", "tools")
     if type(tools) == "table" and next(tools) ~= nil then
@@ -119,13 +132,29 @@ function AnthropicHandler:query(message_history, anthropic_settings, query_optio
         })
     end
 
-    -- Extended thinking (adaptive mode for Claude 4.6+ models)
+    -- Extended thinking (Claude 4.5+ models only)
     local use_thinking = query_options and query_options.thinking_budget
         and query_options.thinking_budget >= 1024
     if use_thinking then
-        requestBodyTable.thinking = {
-            type = "adaptive",
-        }
+        local model = requestBodyTable.model or ""
+        -- Only Claude 4.5+ supports extended thinking; older models (claude-3-*,
+        -- claude-3.5-*) will reject the request.
+        if model:find("4%-6") or model:find("opus%-4") or model:find("sonnet%-4") then
+            -- Claude 4.6+ supports adaptive thinking (model manages its own budget)
+            requestBodyTable.thinking = { type = "adaptive" }
+        elseif model:find("4%-5") then
+            -- Claude 4.5 (including Haiku) requires explicit budget_tokens,
+            -- and budget_tokens must be < max_tokens (both share the same pool).
+            local max_tok = requestBodyTable.max_tokens or 8096
+            local budget = math.min(query_options.thinking_budget, max_tok - 1024)
+            if budget >= 1024 then
+                requestBodyTable.max_tokens = max_tok + budget
+                requestBodyTable.thinking = {
+                    type = "enabled",
+                    budget_tokens = budget,
+                }
+            end
+        end
     end
 
     local requestBody = json.encode(requestBodyTable)
@@ -164,12 +193,23 @@ function AnthropicHandler:query(message_history, anthropic_settings, query_optio
         return nil, "Error: Failed to parse Anthropic API response"
     end
 
+    -- Extract token usage from response
+    local token_usage = nil
+    if parsed.usage then
+        token_usage = {
+            input = parsed.usage.input_tokens or 0,
+            output = parsed.usage.output_tokens or 0,
+            cache_read = parsed.usage.cache_read_input_tokens or 0,
+            cache_write = parsed.usage.cache_creation_input_tokens or 0,
+        }
+    end
+
     local content = extract_text_from_content(parsed.content)
     if type(content) ~= "string" or #content == 0 then
         content = koutil.tableGetValue(parsed, "content", 1, "text")
     end
     if type(content) == "string" and #content > 0 then
-        return content
+        return content, nil, token_usage
     end
 
     local err_msg = koutil.tableGetValue(parsed, "error", "message")

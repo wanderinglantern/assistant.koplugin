@@ -419,7 +419,7 @@ local function showDictionaryDialog(assistant, highlightedText, message_history,
     end
 
     -- Query the AI with the message history
-    local ret, err = Querier:query(message_history, loading_message)
+    local ret, err, token_usage = Querier:query(message_history, loading_message, { cache_system_prompt = true })
     if err ~= nil then
         assistant.querier:showError(err)
         return
@@ -470,6 +470,7 @@ local function showDictionaryDialog(assistant, highlightedText, message_history,
         ui = ui,
         title = title,
         text = result,
+        token_usage = token_usage,
         onAddToNote = handleAddToNote,
         default_hold_callback = function ()
             chatgpt_viewer:HoldClose()

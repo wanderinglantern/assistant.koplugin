@@ -166,13 +166,14 @@ function AssistantDialog:_createResultText(highlightedText, message_history, pre
 end
 
 -- Helper function to create and show ChatGPT viewer
-function AssistantDialog:_createAndShowViewer(highlightedText, message_history, title)
+function AssistantDialog:_createAndShowViewer(highlightedText, message_history, title, token_usage)
   local result_text = self:_createResultText(highlightedText, message_history, nil, title)
-  
-  local chatgpt_viewer 
+
+  local chatgpt_viewer
   chatgpt_viewer = ChatGPTViewer:new {
     title = title,
     text = result_text,
+    token_usage = token_usage,
     text_face = Font:getFace("infofont", self.assistant.settings:readSetting("response_font_size") or 20),
     assistant = self.assistant,
     ui = self.assistant.ui,
@@ -199,18 +200,19 @@ function AssistantDialog:_createAndShowViewer(highlightedText, message_history, 
         viewer:trimMessageHistory()
         NetworkMgr:runWhenOnline(function()
           Trapper:wrap(function()
-            local answer, err = self.querier:query(message_history)
-            
+            local answer, followup_err, followup_token_usage = self.querier:query(message_history, nil, { cache_system_prompt = true })
+
             -- Check if we got a valid response
-            if err then
-              self.querier:showError(err)
+            if followup_err then
+              self.querier:showError(followup_err)
               return
             end
-            
+
             table.insert(message_history, {
               role = "assistant",
               content = answer
             })
+            viewer.token_usage = followup_token_usage
             viewer:update(self:_createResultText(current_highlight, message_history, viewer.text, viewer_title))
             
             if viewer.scroll_text_w then
@@ -342,22 +344,22 @@ function AssistantDialog:show(highlightedText)
         user_question = user_question .. book_text_prompt
         self:_prepareMessageHistoryForUserQuery(message_history, highlightedText, user_question)
         Trapper:wrap(function()
-          local answer, err = self.querier:query(message_history)
-          
+          local answer, err, token_usage = self.querier:query(message_history, nil, { cache_system_prompt = true })
+
           -- Check if we got a valid response
           if err then
             self.querier:showError(err)
             return
           end
-          
+
           table.insert(message_history, {
             role = "assistant",
             content = answer,
           })
-          
-          -- do not have a title to display user prompt 
+
+          -- do not have a title to display user prompt
           local viewer_title = nil
-          self:_createAndShowViewer(highlightedText, message_history, viewer_title)
+          self:_createAndShowViewer(highlightedText, message_history, viewer_title, token_usage)
         end)
       end
     }
@@ -525,7 +527,11 @@ function AssistantDialog:showCustomPrompt(highlightedText, prompt_index, user_in
     }
   }
   
-  local answer, err = self.querier:query(message_history, string.format("🌐 Loading for %s ...", title or prompt_index))
+  local query_options = { cache_system_prompt = true }
+  if prompt_config.max_tokens then
+      query_options.max_tokens = prompt_config.max_tokens
+  end
+  local answer, err, token_usage = self.querier:query(message_history, string.format("🌐 Loading for %s ...", title or prompt_index), query_options)
   if err then
     self.querier:showError(err)
     return
@@ -542,7 +548,7 @@ function AssistantDialog:showCustomPrompt(highlightedText, prompt_index, user_in
     return
   end
 
-  self:_createAndShowViewer(highlightedText, message_history, title)
+  self:_createAndShowViewer(highlightedText, message_history, title, token_usage)
 end
 
 return AssistantDialog
