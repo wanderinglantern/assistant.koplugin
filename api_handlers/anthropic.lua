@@ -79,12 +79,25 @@ function AnthropicHandler:query(message_history, anthropic_settings, query_optio
         requestBodyTable.tools = tools
     end
 
+    -- Extended thinking
+    local thinking_budget = query_options and query_options.thinking_budget
+    if thinking_budget and thinking_budget >= 1024 then
+        requestBodyTable.thinking = {
+            type = "enabled",
+            budget_tokens = thinking_budget,
+        }
+        requestBodyTable.temperature = 1
+    end
+
     local requestBody = json.encode(requestBodyTable)
     local headers = {
         ["Content-Type"] = "application/json",
         ["x-api-key"] = anthropic_settings.api_key,
         ["anthropic-version"] = koutil.tableGetValue(anthropic_settings, "additional_parameters", "anthropic_version")
     }
+    if thinking_budget and thinking_budget >= 1024 then
+        headers["anthropic-beta"] = "interleaved-thinking-2025-05-14"
+    end
     if requestBodyTable.stream then
         -- For streaming responses, we need to handle the response differently
         headers["Accept"] = "text/event-stream"
