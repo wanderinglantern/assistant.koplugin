@@ -1537,6 +1537,167 @@ end
           }})
         end
 
+        -- Re-Query with Model
+        table.insert(buttons, {{
+          text = _("Re-Query with Model..."),
+          callback = function()
+            UIManager:close(bd)
+            NetworkMgr:runWhenOnline(function()
+              Trapper:wrap(function()
+                -- Ensure querier is initialized
+                if not assistant_self.querier:is_inited() then
+                  local ok_init, init_err = assistant_self.querier:load_model(assistant_self:getModelProvider())
+                  if not ok_init then
+                    UIManager:show(InfoMessage:new{ icon = "notice-warning", text = init_err })
+                    return
+                  end
+                end
+
+                -- Fetch available models
+                local AnthropicHandler = require("api_handlers.anthropic")
+                local api_key = FrontendUtil.tableGetValue(
+                    assistant_self.CONFIGURATION, "provider_settings", "anthropic", "api_key")
+                local anthropic_version = FrontendUtil.tableGetValue(
+                    assistant_self.CONFIGURATION, "provider_settings", "anthropic",
+                    "additional_parameters", "anthropic_version")
+
+                local loading = InfoMessage:new{ text = _("Fetching available models...") }
+                UIManager:show(loading)
+                UIManager:forceRePaint()
+                local models, fetch_err = AnthropicHandler:fetchModels(api_key, anthropic_version)
+                UIManager:close(loading)
+
+                if not models or fetch_err then
+                  UIManager:show(InfoMessage:new{
+                    icon = "notice-warning",
+                    text = T(_("Failed to fetch models:\n%1"), fetch_err or _("Unknown error")),
+                  })
+                  return
+                end
+                if #models == 0 then
+                  UIManager:show(InfoMessage:new{ text = _("No models available.") })
+                  return
+                end
+
+                -- Build model selection menu
+                local current_model = assistant_self.querier.provider_settings.model
+                local ReqMenu = require("ui/widget/menu")
+                local Size = require("ui/size")
+
+                local model_items = {}
+                for _, model in ipairs(models) do
+                  table.insert(model_items, {
+                    text = model.display_name .. "  (" .. model.id .. ")",
+                    mandatory = model.id == current_model and _("current") or "",
+                    _model_id = model.id,
+                  })
+                end
+
+                local model_menu
+                model_menu = ReqMenu:new{
+                  title = T(_("Re-Query: %1"), item._entry_name),
+                  item_table = model_items,
+                  width = Device.screen:getWidth() - Size.margin.default * 2,
+                  height = Device.screen:getHeight() - Size.margin.default * 2,
+                  items_per_page = 14,
+                  is_borderless = false,
+                  is_popout = false,
+                  onMenuChoice = function(self_menu, m_item)
+                    UIManager:close(model_menu)
+
+                    -- Override model temporarily
+                    local original_model = assistant_self.querier.provider_settings.model
+                    assistant_self.querier.provider_settings.model = m_item._model_id
+
+                    -- Build xray_single_term prompt
+                    local book = getDocumentInfo(assistant_self.ui.document)
+                    local language = assistant_self.settings:readSetting("response_language")
+                                  or assistant_self.ui_language
+                    local pct = book.percent_finished or 0
+                    local formatted_progress = string.format("%.2f", pct * 100)
+
+                    local prompts = require("assistant_prompts").assistant_prompts
+                    local system_prompt = prompts.xray_single_term.system_prompt
+                    local user_prompt = prompts.xray_single_term.user_prompt:gsub("{(%w+)}", {
+                      title     = book.title or "",
+                      author    = book.authors or "",
+                      progress  = formatted_progress,
+                      highlight = item._entry_name,
+                      language  = language,
+                    })
+
+                    local message_history = {
+                      { role = "system", content = system_prompt },
+                      { role = "user",   content = user_prompt },
+                    }
+
+                    local answer, query_err = assistant_self.querier:query(
+                      message_history,
+                      T(_("Re-querying \"%1\"..."), item._entry_name),
+                      { no_stream = true }
+                    )
+
+                    -- Always restore original model
+                    assistant_self.querier.provider_settings.model = original_model
+
+                    if query_err then
+                      assistant_self.querier:showError(query_err)
+                      return
+                    end
+
+                    -- Parse JSON response
+                    local featuredialog = require("assistant_featuredialog")
+                    local index = featuredialog.extractXRayIndex(answer)
+                    if not index then
+                      UIManager:show(InfoMessage:new{
+                        text = T(_("Could not parse X-Ray data for \"%1\"."), item._entry_name),
+                      })
+                      return
+                    end
+
+                    -- Update existing entry in-place
+                    local target_entry = book_dict[item._entry_type]
+                                     and book_dict[item._entry_type][item._entry_name]
+                    if target_entry then
+                      local new_list = (item._entry_type == "characters" and index.characters)
+                                    or (item._entry_type == "locations"  and index.locations)
+                                    or (item._entry_type == "terms"      and index.terms)
+                                    or {}
+                      for _, new_e in ipairs(new_list) do
+                        if new_e.name then
+                          target_entry.description = new_e.description or target_entry.description
+                          if item._entry_type == "characters" then
+                            target_entry.relationships = new_e.relationships or target_entry.relationships
+                            target_entry.aliases = target_entry.aliases or {}
+                            local alias_set = {}
+                            for _, a in ipairs(target_entry.aliases) do alias_set[a:lower()] = true end
+                            for _, a in ipairs(new_e.aliases or {}) do
+                              if not alias_set[a:lower()] then
+                                table.insert(target_entry.aliases, a)
+                              end
+                            end
+                          end
+                          break
+                        end
+                      end
+                      target_entry.user_edited = true
+                    end
+
+                    saveDictionary()
+                    refreshMenu()
+
+                    UIManager:show(InfoMessage:new{
+                      text = T(_("Entry \"%1\" updated."), item._entry_name),
+                      timeout = 2,
+                    })
+                  end,
+                }
+                UIManager:show(model_menu)
+              end)
+            end)
+          end,
+        }})
+
         -- Delete Entry
         table.insert(buttons, {{
           text = _("Delete Entry"),
