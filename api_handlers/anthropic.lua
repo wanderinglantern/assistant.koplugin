@@ -132,19 +132,19 @@ function AnthropicHandler:query(message_history, anthropic_settings, query_optio
         })
     end
 
-    -- Extended thinking (Claude 4.5+ models only)
+    -- Extended thinking (Claude Sonnet/Opus only — Haiku does not support it)
     local use_thinking = query_options and query_options.thinking_budget
         and query_options.thinking_budget >= 1024
     if use_thinking then
         local model = requestBodyTable.model or ""
-        -- Only Claude 4.5+ supports extended thinking; older models (claude-3-*,
-        -- claude-3.5-*) will reject the request.
-        if model:find("4%-6") or model:find("opus%-4") or model:find("sonnet%-4") then
+        if model:find("haiku") then
+            -- Haiku models do not support extended thinking; skip silently
+        elseif model:find("4%-6") then
             -- Claude 4.6+ supports adaptive thinking (model manages its own budget)
             requestBodyTable.thinking = { type = "adaptive" }
-        elseif model:find("4%-5") then
-            -- Claude 4.5 (including Haiku) requires explicit budget_tokens,
-            -- and budget_tokens must be < max_tokens (both share the same pool).
+        elseif model:find("4%-5") or model:find("opus%-4") or model:find("sonnet%-4") then
+            -- Claude 4.0/4.5 Sonnet/Opus requires explicit budget_tokens.
+            -- budget_tokens must be < max_tokens (both share the same output pool).
             local max_tok = requestBodyTable.max_tokens or 8096
             local budget = math.min(query_options.thinking_budget, max_tok - 1024)
             if budget >= 1024 then
