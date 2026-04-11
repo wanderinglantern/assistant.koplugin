@@ -10,6 +10,7 @@ local Event = require("ui/event")
 local koutil = require("util")
 local assistant_utils = require("assistant_utils")
 local dict_prompts = require("assistant_prompts").assistant_prompts.dict
+local featuredialog = require("assistant_featuredialog")
 
 -- Expand context sentences to include surrounding sentences for pronouns and related narrative
 -- This captures "he", "she", "they" and nearby actions that provide important context
@@ -391,7 +392,7 @@ local function showDictionaryDialog(assistant, highlightedText, message_history,
         loading_message = _("Loading Term X-Ray ...")
         local context_message = {
             role = "user",
-            content = string.gsub(user_prompt, "{(%w+)}", {
+            content = string.gsub(user_prompt, "{([%w_]+)}", {
                     language = dict_language,
                     context = context_content,
                     context_sentence_count = context_sentence_count,
@@ -409,7 +410,7 @@ local function showDictionaryDialog(assistant, highlightedText, message_history,
         loading_message = _("Loading AI Dictionary ...")
         local context_message = {
             role = "user",
-            content = string.gsub(user_prompt, "{(%w+)}", {
+            content = string.gsub(user_prompt, "{([%w_]+)}", {
                     language = dict_language,
                     context = context_content,
                     word = highlightedText
@@ -425,6 +426,42 @@ local function showDictionaryDialog(assistant, highlightedText, message_history,
         return
     end
 
+    -- For term_xray: extract dictionary entry JSON and save to X-Ray dictionary
+    local xray_saved = false
+    if prompt_type == "term_xray" and ret then
+        local index = featuredialog.extractXRayIndex(ret)
+
+        -- Strip the X-Ray Dictionary Entry section from display text
+        local dict_section_start = ret:find("\n#+ X%-Ray Dictionary Entry")
+        if dict_section_start then
+            ret = ret:sub(1, dict_section_start - 1):gsub("%s+$", "")
+        elseif index then
+            -- Fallback: strip trailing JSON block if heading wasn't used but JSON was found
+            ret = ret:gsub("\n*```json.-```%s*$", "")
+        end
+
+        -- Save to X-Ray dictionary if JSON was successfully parsed
+        if index then
+            local props = ui.document:getProps()
+            local book_hash = props.md5
+                or (ui.document.file and tostring(ui.document.file):gsub("[^%w]", "_"))
+
+            if book_hash and ui.document.file then
+                local DocSettings = require("docsettings")
+                local doc_settings = DocSettings:open(ui.document.file)
+                local percent_finished = doc_settings:readSetting("percent_finished") or 0
+                local formatted_progress = string.format("%.2f", percent_finished * 100)
+
+                local xray_data = assistant.settings:readSetting("xray_dictionary") or {}
+                xray_data[book_hash] = featuredialog.mergeXRayData(
+                    xray_data[book_hash], index, formatted_progress, false)
+                assistant.settings:saveSetting("xray_dictionary", xray_data)
+                assistant.settings:flush()
+                xray_saved = true
+            end
+        end
+    end
+
     local function createResultText(highlightedText, answer)
         local result_text
         local render_markdown = koutil.tableGetValue(CONFIGURATION, "features", "render_markdown") or true
@@ -437,8 +474,8 @@ local function showDictionaryDialog(assistant, highlightedText, message_history,
             result_text = T("... %1 **%2** %3 ...\n\n%4", prev_context_limited, highlightedText, next_context_limited, normalized_answer)
         else
             -- in plain text mode, use widget controlled characters.
-            result_text = T("%1... %2%3%4 ...\n\n%5", TextBoxWidget.PTF_HEADER, prev_context_limited, 
-                TextBoxWidget.PTF_BOLD_START, highlightedText, TextBoxWidget.PTF_BOLD_END,  next_context_limited, normalized_answer)
+            result_text = T("%1... %2%3%4%5%6 ...\n\n%7", TextBoxWidget.PTF_HEADER, prev_context_limited,
+                TextBoxWidget.PTF_BOLD_START, highlightedText, TextBoxWidget.PTF_BOLD_END, next_context_limited, normalized_answer)
         end
         return result_text
     end
@@ -472,6 +509,7 @@ local function showDictionaryDialog(assistant, highlightedText, message_history,
         text = result,
         token_usage = token_usage,
         onAddToNote = handleAddToNote,
+        force_save_to_notebook = (prompt_type == "term_xray"),
         default_hold_callback = function ()
             chatgpt_viewer:HoldClose()
         end,

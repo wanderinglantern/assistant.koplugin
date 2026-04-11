@@ -121,6 +121,24 @@ Most importantly, **Respond in this language:** {language}
 
 ## Context from the Book
 {context}
+
+## X-Ray Dictionary Entry
+
+Finally, after your analysis, provide a concise dictionary entry for "{highlight}" as a JSON code block. Classify it as a character, location, or term based on your analysis. Only include the relevant category — leave the others as empty arrays. The description should be a brief 1-2 sentence summary suitable for quick reference during reading.
+
+```json
+{
+  "characters": [
+    { "name": "Primary Name", "aliases": ["Alt Name"], "description": "Brief 1-2 sentence description", "relationships": "Key relationships" }
+  ],
+  "locations": [
+    { "name": "Place Name", "description": "Brief description and significance" }
+  ],
+  "terms": [
+    { "name": "Term", "description": "Concise definition or significance" }
+  ]
+}
+```
 ]],
     },
     dictionary = {
@@ -439,6 +457,8 @@ The reader is reading "{title}" by {author} (currently at {progress}% progress).
 They highlighted the term: "{highlight}"
 
 Classify this term and return ONLY a JSON code block. Determine if it is a character, location, or term/concept from this book. If it is not recognizable as something from this book, classify it as a "term" with a general definition.
+
+**IMPORTANT: Your description must be spoiler-free — do NOT reveal any events, developments, or information beyond {progress}% progress.**
 
 ```json
 {

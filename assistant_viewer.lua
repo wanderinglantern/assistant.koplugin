@@ -157,6 +157,7 @@ local ChatGPTViewer = InputContainer:extend {
   onAskQuestion = nil, -- callback when the Ask Another Question button is pressed
   input_dialog = nil,
   disable_add_note = false, -- when true, do not show the Add Note button
+  force_save_to_notebook = false, -- when true, always save to notebook on close
 }
 
 -- Global variables
@@ -466,8 +467,8 @@ function ChatGPTViewer:init()
       table.insert(buttons[#buttons], #(buttons[#buttons]), add_note_button)
   end
 
-  -- Only add Save button if auto_save_to_notebook is disabled
-  if not self.assistant.settings:readSetting("auto_save_to_notebook", false) then
+  -- Only add Save button if neither auto_save nor force_save will save on close
+  if not self.force_save_to_notebook and not self.assistant.settings:readSetting("auto_save_to_notebook", false) then
       local save_button = {
           text = _("Save"),
           callback = function()
@@ -825,8 +826,8 @@ function ChatGPTViewer:onTapClose(arg, ges_ev)
 end
 
 function ChatGPTViewer:onClose()
-  -- Export chat log if enabled
-  if self.assistant.settings:readSetting("auto_save_to_notebook", false) then
+  -- Export chat log if enabled or forced (e.g., Term X-Ray always saves)
+  if self.force_save_to_notebook or self.assistant.settings:readSetting("auto_save_to_notebook", false) then
     self:saveToNotebook()
   end
   

@@ -663,9 +663,18 @@ function Assistant:init()
     -- Matches word against dictionary entry names, aliases, and individual name words.
     -- Returns (entry, entry_type, matched_name) or nil.
     -- Stored on self so onDictButtonsReady can also use it.
-    function self:findXRayEntry(word, book_dict)
+    -- current_progress: optional formatted progress string (e.g., "45.23").
+    -- When provided, entries whose updated_progress exceeds it are skipped (spoiler gate).
+    function self:findXRayEntry(word, book_dict, current_progress)
       if not book_dict or not word or #word == 0 then return nil end
       local word_lower = word:lower()
+      local progress_num = current_progress and tonumber(current_progress)
+
+      local function withinProgress(entry)
+        if not progress_num or not entry.updated_progress then return true end
+        local entry_pct = tonumber(entry.updated_progress)
+        return not entry_pct or entry_pct <= progress_num
+      end
 
       -- Check if word matches a name (exact or word-level) or alias
       local function nameMatches(name)
@@ -679,26 +688,28 @@ function Assistant:init()
 
       if book_dict.characters then
         for name, char in pairs(book_dict.characters) do
-          if nameMatches(name) then
-            return char, "character", name
-          end
-          for _, alias in ipairs(char.aliases or {}) do
-            if nameMatches(alias) then
+          if withinProgress(char) then
+            if nameMatches(name) then
               return char, "character", name
+            end
+            for _, alias in ipairs(char.aliases or {}) do
+              if nameMatches(alias) then
+                return char, "character", name
+              end
             end
           end
         end
       end
       if book_dict.locations then
         for name, loc in pairs(book_dict.locations) do
-          if nameMatches(name) then
+          if withinProgress(loc) and nameMatches(name) then
             return loc, "location", name
           end
         end
       end
       if book_dict.terms then
         for name, term in pairs(book_dict.terms) do
-          if nameMatches(name) then
+          if withinProgress(term) and nameMatches(name) then
             return term, "term", name
           end
         end
@@ -712,6 +723,14 @@ function Assistant:init()
     self.ui.highlight:addToHighlightDialog("ai_xray_lookup", function(_reader_highlight_instance)
       local selected = _reader_highlight_instance.selected_text
       local word = selected and selected.text and FrontendUtil.trim(selected.text) or ""
+      -- Compute progress once per popup open (not on every show_in_highlight_dialog_func call)
+      local current_progress
+      if self.ui.document and self.ui.document.file then
+        local DocSettings = require("docsettings")
+        local doc_settings = DocSettings:open(self.ui.document.file)
+        local pf = doc_settings:readSetting("percent_finished") or 0
+        current_progress = string.format("%.2f", pf * 100)
+      end
       -- Capture match state in upvalues for callback use
       local entry, entry_type, matched_name
       return {
@@ -725,7 +744,7 @@ function Assistant:init()
           local xray_data = self.settings:readSetting("xray_dictionary") or {}
           local book_dict = xray_data[book_hash]
           if not book_dict then return false end
-          entry, entry_type, matched_name = self:findXRayEntry(word, book_dict)
+          entry, entry_type, matched_name = self:findXRayEntry(word, book_dict, current_progress)
           return entry ~= nil
         end,
         font_bold = true,
@@ -791,7 +810,7 @@ function Assistant:init()
               local system_prompt = prompts.xray_single_term.system_prompt
               local user_prompt = prompts.xray_single_term.user_prompt:gsub("{(%w+)}", {
                 title = book.title or "",
-                author = book.author or "",
+                author = book.authors or "",
                 progress = formatted_progress,
                 highlight = word,
                 language = language,
@@ -821,9 +840,9 @@ function Assistant:init()
               -- Merge into dictionary
               local mergeXRayData = featuredialog.mergeXRayData
 
-              xray_data = self.settings:readSetting("xray_dictionary") or {}
+              local xray_data = self.settings:readSetting("xray_dictionary") or {}
               xray_data[book_hash] = mergeXRayData(
-                xray_data[book_hash], index, formatted_progress)
+                xray_data[book_hash], index, formatted_progress, false)
               self.settings:saveSetting("xray_dictionary", xray_data)
               self.settings:flush()
 
@@ -976,7 +995,11 @@ function Assistant:onDictButtonsReady(dict_popup, dict_buttons)
       local book_dict = xray_data[book_hash]
       if book_dict then
         local word = dict_popup.word
-        local entry, entry_type, matched_name = self:findXRayEntry(word, book_dict)
+        local DocSettings = require("docsettings")
+        local doc_settings = DocSettings:open(self.ui.document.file)
+        local pf = doc_settings:readSetting("percent_finished") or 0
+        local current_progress = string.format("%.2f", pf * 100)
+        local entry, entry_type, matched_name = self:findXRayEntry(word, book_dict, current_progress)
         if entry then
           table.insert(plugin_buttons, {
             id = "assistant_xray_dict",
@@ -1026,7 +1049,7 @@ function Assistant:onDictButtonsReady(dict_popup, dict_buttons)
                   local system_prompt = prompts.xray_single_term.system_prompt
                   local user_prompt = prompts.xray_single_term.user_prompt:gsub("{(%w+)}", {
                     title = book.title or "",
-                    author = book.author or "",
+                    author = book.authors or "",
                     progress = formatted_progress,
                     highlight = word,
                     language = language,
@@ -1050,7 +1073,7 @@ function Assistant:onDictButtonsReady(dict_popup, dict_buttons)
                   end
                   local cur_xray = self.settings:readSetting("xray_dictionary") or {}
                   cur_xray[book_hash] = featuredialog.mergeXRayData(
-                    cur_xray[book_hash], index, formatted_progress)
+                    cur_xray[book_hash], index, formatted_progress, false)
                   self.settings:saveSetting("xray_dictionary", cur_xray)
                   self.settings:flush()
                   local added = {}
@@ -1088,7 +1111,7 @@ function Assistant:onDictButtonsReady(dict_popup, dict_buttons)
                   local system_prompt = prompts.xray_single_term.system_prompt
                   local user_prompt = prompts.xray_single_term.user_prompt:gsub("{(%w+)}", {
                     title = book.title or "",
-                    author = book.author or "",
+                    author = book.authors or "",
                     progress = formatted_progress,
                     highlight = word,
                     language = language,
@@ -1112,7 +1135,7 @@ function Assistant:onDictButtonsReady(dict_popup, dict_buttons)
                   end
                   local cur_xray = self.settings:readSetting("xray_dictionary") or {}
                   cur_xray[book_hash] = featuredialog.mergeXRayData(
-                    cur_xray[book_hash], index, formatted_progress)
+                    cur_xray[book_hash], index, formatted_progress, false)
                   self.settings:saveSetting("xray_dictionary", cur_xray)
                   self.settings:flush()
                   local added = {}
@@ -1288,77 +1311,139 @@ end
       return
     end
 
-    -- Build menu items from all entry types
-    local menu_items = {}
-    if book_dict.characters then
-      for name, char in pairs(book_dict.characters) do
-        local aliases_str = (char.aliases and #char.aliases > 0) and (" (" .. table.concat(char.aliases, ", ") .. ")") or ""
-        table.insert(menu_items, {
-          text = name .. aliases_str,
-          mandatory = _("Character"),
-          callback = function()
-            local parts = { "**" .. name .. "**" }
-            if char.description and char.description ~= "" then
-              table.insert(parts, "\n\n" .. char.description)
-            end
-            if char.relationships and char.relationships ~= "" then
-              table.insert(parts, "\n\n*Relationships:* " .. char.relationships)
-            end
-            UIManager:show(InfoMessage:new{
-              text = table.concat(parts),
-              width = Device.screen:getWidth() - Device.screen:scaleBySize(40),
-            })
-          end,
-          _sort_key = "1_" .. name:lower(),
-        })
+    local assistant_self = self
+    local InputDialog = require("ui/widget/inputdialog")
+    local DocSettings = require("docsettings")
+    local doc_settings = DocSettings:open(self.ui.document.file)
+    local pf = doc_settings:readSetting("percent_finished") or 0
+    local current_progress_num = pf * 100
+    local hidden_count = 0
+
+    local function progressLabel(entry, type_label)
+      if entry.updated_progress then
+        return type_label .. " @" .. entry.updated_progress .. "%"
       end
-    end
-    if book_dict.locations then
-      for name, loc in pairs(book_dict.locations) do
-        table.insert(menu_items, {
-          text = name,
-          mandatory = _("Location"),
-          callback = function()
-            UIManager:show(InfoMessage:new{
-              text = "**" .. name .. "** (Location)\n\n" .. (loc.description or ""),
-              width = Device.screen:getWidth() - Device.screen:scaleBySize(40),
-            })
-          end,
-          _sort_key = "2_" .. name:lower(),
-        })
-      end
-    end
-    if book_dict.terms then
-      for name, term in pairs(book_dict.terms) do
-        table.insert(menu_items, {
-          text = name,
-          mandatory = _("Term"),
-          callback = function()
-            UIManager:show(InfoMessage:new{
-              text = "**" .. name .. "** (Term)\n\n" .. (term.description or ""),
-              width = Device.screen:getWidth() - Device.screen:scaleBySize(40),
-            })
-          end,
-          _sort_key = "3_" .. name:lower(),
-        })
-      end
+      return type_label
     end
 
-    -- Sort: characters first, then locations, then terms, alphabetically within
-    table.sort(menu_items, function(a, b)
-      return (a._sort_key or "") < (b._sort_key or "")
-    end)
+    -- Check if entry's updated_progress is within current reading position
+    local function withinProgress(entry)
+      if not entry.updated_progress then return true end
+      local entry_pct = tonumber(entry.updated_progress)
+      return not entry_pct or entry_pct <= current_progress_num
+    end
 
-    if #menu_items == 0 then
+    -- Build menu items from current dictionary state, filtering by progress
+    local function buildMenuItems()
+      local items = {}
+      hidden_count = 0
+      if book_dict.characters then
+        for name, char in pairs(book_dict.characters) do
+          if not withinProgress(char) then hidden_count = hidden_count + 1
+          else
+          local aliases_str = (char.aliases and #char.aliases > 0) and (" (" .. table.concat(char.aliases, ", ") .. ")") or ""
+          table.insert(items, {
+            text = name .. aliases_str,
+            mandatory = progressLabel(char, _("Character")),
+            _entry_name = name,
+            _entry_type = "characters",
+            callback = function()
+              local parts = { "**" .. name .. "**" }
+              if char.description and char.description ~= "" then
+                table.insert(parts, "\n\n" .. char.description)
+              end
+              if char.relationships and char.relationships ~= "" then
+                table.insert(parts, "\n\n*Relationships:* " .. char.relationships)
+              end
+              UIManager:show(InfoMessage:new{
+                text = table.concat(parts),
+                width = Device.screen:getWidth() - Device.screen:scaleBySize(40),
+              })
+            end,
+            _sort_key = "1_" .. name:lower(),
+          })
+          end -- withinProgress else
+        end
+      end
+      if book_dict.locations then
+        for name, loc in pairs(book_dict.locations) do
+          if not withinProgress(loc) then hidden_count = hidden_count + 1
+          else
+          table.insert(items, {
+            text = name,
+            mandatory = progressLabel(loc, _("Location")),
+            _entry_name = name,
+            _entry_type = "locations",
+            callback = function()
+              UIManager:show(InfoMessage:new{
+                text = "**" .. name .. "** (Location)\n\n" .. (loc.description or ""),
+                width = Device.screen:getWidth() - Device.screen:scaleBySize(40),
+              })
+            end,
+            _sort_key = "2_" .. name:lower(),
+          })
+          end -- withinProgress else
+        end
+      end
+      if book_dict.terms then
+        for name, term in pairs(book_dict.terms) do
+          if not withinProgress(term) then hidden_count = hidden_count + 1
+          else
+          table.insert(items, {
+            text = name,
+            mandatory = progressLabel(term, _("Term")),
+            _entry_name = name,
+            _entry_type = "terms",
+            callback = function()
+              UIManager:show(InfoMessage:new{
+                text = "**" .. name .. "** (Term)\n\n" .. (term.description or ""),
+                width = Device.screen:getWidth() - Device.screen:scaleBySize(40),
+              })
+            end,
+            _sort_key = "3_" .. name:lower(),
+          })
+          end -- withinProgress else
+        end
+      end
+      table.sort(items, function(a, b)
+        return (a._sort_key or "") < (b._sort_key or "")
+      end)
+      return items
+    end
+
+    local menu_items = buildMenuItems()
+
+    if #menu_items == 0 and hidden_count == 0 then
       UIManager:show(InfoMessage:new{
         text = _("Dictionary is empty. Run X-Ray or Update Dictionary first."),
       })
       return
+    elseif #menu_items == 0 and hidden_count > 0 then
+      UIManager:show(InfoMessage:new{
+        text = T(N_("%1 entry hidden (beyond current reading progress).",
+                    "%1 entries hidden (beyond current reading progress).",
+                    hidden_count), hidden_count),
+      })
+      return
+    end
+
+    local function menuTitle()
+      if hidden_count > 0 then
+        return T(_("X-Ray Dictionary (%1 entries, %2 hidden)"), #menu_items, hidden_count)
+      end
+      return T(_("X-Ray Dictionary (%1 entries)"), #menu_items)
     end
 
     local Menu = require("ui/widget/menu")
     local Size = require("ui/size")
     local all_items = menu_items
+    local dict_menu
+
+    local function refreshMenu()
+      menu_items = buildMenuItems()
+      all_items = menu_items
+      dict_menu:switchItemTable(menuTitle(), menu_items)
+    end
 
     local function filterItems(query)
       if not query or query == "" then return all_items end
@@ -1372,9 +1457,13 @@ end
       return filtered
     end
 
-    local dict_menu
+    local function saveDictionary()
+      assistant_self.settings:saveSetting("xray_dictionary", xray_data)
+      assistant_self.settings:flush()
+    end
+
     dict_menu = Menu:new{
-      title = T(_("X-Ray Dictionary (%1 entries)"), #menu_items),
+      title = menuTitle(),
       item_table = menu_items,
       width = Device.screen:getWidth() - Size.margin.default * 2,
       height = Device.screen:getHeight() - Size.margin.default * 2,
@@ -1383,6 +1472,97 @@ end
       is_popout = false,
       onMenuChoice = function(self_menu, item)
         if item.callback then item.callback() end
+      end,
+      onMenuHold = function(self_menu, item)
+        if not item._entry_name or not item._entry_type then return true end
+        local entry = book_dict[item._entry_type] and book_dict[item._entry_type][item._entry_name]
+        if not entry then return true end
+
+        local bd
+        local buttons = {}
+
+        -- Edit Description
+        table.insert(buttons, {{
+          text = _("Edit Description"),
+          callback = function()
+            UIManager:close(bd)
+            local edit_dialog
+            edit_dialog = InputDialog:new{
+              title = T(_("Edit: %1"), item._entry_name),
+              input = entry.description or "",
+              input_type = "text",
+              allow_newline = true,
+              buttons = {{
+                { text = _("Cancel"), callback = function() UIManager:close(edit_dialog) end },
+                { text = _("Save"), is_enter_default = true, callback = function()
+                  entry.description = edit_dialog:getInputText()
+                  entry.user_edited = true
+                  saveDictionary()
+                  UIManager:close(edit_dialog)
+                  refreshMenu()
+                end },
+              }},
+            }
+            UIManager:show(edit_dialog)
+            edit_dialog:onShowKeyboard()
+          end,
+        }})
+
+        -- Edit Relationships (characters only)
+        if item._entry_type == "characters" then
+          table.insert(buttons, {{
+            text = _("Edit Relationships"),
+            callback = function()
+              UIManager:close(bd)
+              local edit_dialog
+              edit_dialog = InputDialog:new{
+                title = T(_("Relationships: %1"), item._entry_name),
+                input = entry.relationships or "",
+                input_type = "text",
+                allow_newline = true,
+                buttons = {{
+                  { text = _("Cancel"), callback = function() UIManager:close(edit_dialog) end },
+                  { text = _("Save"), is_enter_default = true, callback = function()
+                    entry.relationships = edit_dialog:getInputText()
+                    entry.user_edited = true
+                    saveDictionary()
+                    UIManager:close(edit_dialog)
+                    refreshMenu()
+                  end },
+                }},
+              }
+              UIManager:show(edit_dialog)
+              edit_dialog:onShowKeyboard()
+            end,
+          }})
+        end
+
+        -- Delete Entry
+        table.insert(buttons, {{
+          text = _("Delete Entry"),
+          callback = function()
+            UIManager:close(bd)
+            UIManager:show(ConfirmBox:new{
+              text = T(_("Delete \"%1\" from X-Ray Dictionary?"), item._entry_name),
+              ok_text = _("Delete"),
+              ok_callback = function()
+                book_dict[item._entry_type][item._entry_name] = nil
+                saveDictionary()
+                refreshMenu()
+              end,
+            })
+          end,
+        }})
+
+        -- Cancel
+        table.insert(buttons, {{
+          text = _("Cancel"),
+          callback = function() UIManager:close(bd) end,
+        }})
+
+        bd = ButtonDialog:new{ buttons = buttons }
+        UIManager:show(bd)
+        return true
       end,
       title_bar_left_icon = "appbar.search",
       onLeftButtonTap = function()
@@ -1402,9 +1582,7 @@ end
               {
                 text = _("Clear"),
                 callback = function()
-                  dict_menu:switchItemTable(
-                    T(_("X-Ray Dictionary (%1 entries)"), #all_items),
-                    all_items)
+                  dict_menu:switchItemTable(menuTitle(), all_items)
                   UIManager:close(input_dialog)
                 end,
               },

@@ -30,7 +30,9 @@ local function extractXRayIndex(answer)
 end
 
 --- Merge new X-Ray index data into existing dictionary for a book
-local function mergeXRayData(existing, new_data, progress_percent)
+--- When update_last_progress is false, the global last_progress watermark is preserved
+--- (used by single-term adds to avoid advancing the incremental scan boundary)
+local function mergeXRayData(existing, new_data, progress_percent, update_last_progress)
     existing = existing or { characters = {}, locations = {}, terms = {} }
 
     -- Merge characters by primary name
@@ -40,17 +42,20 @@ local function mergeXRayData(existing, new_data, progress_percent)
             local curr = existing.characters[key]
             if curr then
                 -- Merge aliases without duplicates
+                curr.aliases = curr.aliases or {}
                 local alias_set = {}
-                for _, a in ipairs(curr.aliases or {}) do alias_set[a:lower()] = a end
+                for _, a in ipairs(curr.aliases) do alias_set[a:lower()] = a end
                 for _, a in ipairs(entry.aliases or {}) do
                     if not alias_set[a:lower()] then
                         table.insert(curr.aliases, a)
                         alias_set[a:lower()] = a
                     end
                 end
-                -- Update description and relationships with newer data
-                curr.description = entry.description or curr.description
-                curr.relationships = entry.relationships or curr.relationships
+                -- Skip description/relationship overwrite if user has manually edited
+                if not curr.user_edited then
+                    curr.description = entry.description or curr.description
+                    curr.relationships = entry.relationships or curr.relationships
+                end
                 curr.updated_progress = progress_percent
             else
                 existing.characters[key] = {
@@ -66,24 +71,38 @@ local function mergeXRayData(existing, new_data, progress_percent)
     -- Merge locations by name
     for _, entry in ipairs(new_data.locations or {}) do
         if entry.name then
-            existing.locations[entry.name] = {
-                description = entry.description or "",
-                updated_progress = progress_percent,
-            }
+            local curr = existing.locations[entry.name]
+            if curr and curr.user_edited then
+                curr.updated_progress = progress_percent
+            else
+                existing.locations[entry.name] = {
+                    description = entry.description or "",
+                    updated_progress = progress_percent,
+                    user_edited = curr and curr.user_edited,
+                }
+            end
         end
     end
 
     -- Merge terms by name
     for _, entry in ipairs(new_data.terms or {}) do
         if entry.name then
-            existing.terms[entry.name] = {
-                description = entry.description or "",
-                updated_progress = progress_percent,
-            }
+            local curr = existing.terms[entry.name]
+            if curr and curr.user_edited then
+                curr.updated_progress = progress_percent
+            else
+                existing.terms[entry.name] = {
+                    description = entry.description or "",
+                    updated_progress = progress_percent,
+                    user_edited = curr and curr.user_edited,
+                }
+            end
         end
     end
 
-    existing.last_progress = progress_percent
+    if update_last_progress ~= false then
+        existing.last_progress = progress_percent
+    end
     return existing
 end
 
@@ -304,7 +323,7 @@ local function showFeatureDialog(assistant, feature_type, title, author, progres
             -- For full X-Ray, prepend the incremental prefix
             if feature_type == "xray" and tonumber(last_progress_str) > 0 then
                 local incremental_prefix = assistant_prompts.xray_incremental_prefix or ""
-                incremental_prefix = incremental_prefix:gsub("{(%w+)}", {
+                incremental_prefix = incremental_prefix:gsub("{([%w_]+)}", {
                     last_progress = last_progress_str,
                     progress = formatted_progress_percent,
                     known_entities = known_entities_str,
@@ -315,7 +334,7 @@ local function showFeatureDialog(assistant, feature_type, title, author, progres
     end
 
     -- Format the user prompt with variables
-    local user_content = user_prompt_template:gsub("{(%w+)}", {
+    local user_content = user_prompt_template:gsub("{([%w_]+)}", {
       title = title,
       author = author,
       progress = formatted_progress_percent,
